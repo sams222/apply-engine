@@ -1,0 +1,26 @@
+.aider*
+
+# Environments and caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# The owner's private data (profile, resume, ledger, accounts) and run output.
+# Install it with apply-engine/scripts/install-private.py; it never goes in git.
+internship-apps/
+apply-engine-private/
+apply-engine/artifacts/
+apply-engine/resumes/
+apply-engine/apply-queue.json
+apply-engine/APPLY_LOG.md
+apply-engine-handoff-*.zip
+
+# Secrets never live in the repo; they come from ~/.config/apply-engine/ or env vars.
+*.key
+*-password
+.env
+
+# Pre-flatten history of apply-engine/ (git --git-dir=.apply-engine-history.git log)
+.apply-engine-history.git/

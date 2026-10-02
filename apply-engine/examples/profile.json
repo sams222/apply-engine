@@ -1,0 +1,42 @@
+{
+  "full_name": "Jordan Avery",
+  "first_name": "Jordan",
+  "last_name": "Avery",
+  "email": "jordan.avery@example.com",
+  "phone": "+1-555-0100",
+  "linkedin": "https://linkedin.com/in/jordan-avery-demo",
+  "github": "https://github.com/jordanavery",
+  "website": "",
+  "location": "New York, NY",
+  "city": "New York",
+  "state": "NY",
+  "country": "United States",
+  "school": "Hudson State University",
+  "degree": "B.S. Computer Science",
+  "gpa": null,
+  "graduation": "2027",
+  "work_authorized_us": true,
+  "need_sponsorship": false,
+  "eeo": {
+    "gender": "",
+    "race_ethnicity": "",
+    "veteran": "",
+    "disability": ""
+  },
+  "resume_path": "",
+  "preferred_locations": [
+    "New York, NY",
+    "Remote"
+  ],
+  "skills": [
+    "TypeScript",
+    "Node.js",
+    "Python",
+    "React Native",
+    "Firebase"
+  ],
+  "available_from": "May 2026",
+  "postal_code": "10001",
+  "field_of_study": "Computer Science",
+  "previous_employee": false
+}

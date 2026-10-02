@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Workday demo application</title>
+</head>
+<body>
+  <div id="cookie-banner">
+    <p>We use cookies on this site.</p>
+    <button type="button" id="accept-cookies">Accept Cookies</button>
+  </div>
+  <h1>Software Engineering Intern</h1>
+  <p>Workday apply wizard (fixture)</p>
+  <p>City context on the page: New York (must not fool the State widget).</p>
+  <button type="button" id="header-signin">Sign In</button>
+
+  <form id="auth" data-step="auth">
+    <h2>Create Account</h2>
+    <label>Email Address <input id="email" name="email" type="email" data-automation-id="email" /></label>
+    <div id="email-error"></div>
+    <label>Password <input id="password" name="password" type="password" /></label><br />
+    <label>Verify New Password <input id="verifyPassword" name="verifyPassword" type="password" /></label><br />
+    <label>
+      <input type="checkbox" id="consent" name="consent" />
+      Yes, I have read and consent to the terms and conditions
+    </label><br />
+    <button type="submit" id="create-account">Create Account</button>
+    <button type="button" id="open-signin">Sign In</button>
+  </form>
+  <div id="signin-overlay" hidden>
+    <h2>Sign In</h2>
+    <label>Email Address <input id="overlay-email" type="email" /></label>
+    <p id="overlay-email-error">Error: Please enter a valid email</p>
+    <label>Password <input id="overlay-password" type="password" /></label>
+    <button type="button" id="overlay-create">Create Account</button>
+    <button type="button" id="overlay-signin">Sign In</button>
+  </div>
+
+  <form id="personal" data-step="personal" hidden>
+    <h2>My Information</h2>
+    <label>First Name <input id="first_name" name="first_name" data-automation-id="legalName--firstName" /></label><br />
+    <label>Last Name <input id="last_name" name="last_name" data-automation-id="legalName--lastName" /></label><br />
+    <label>Country Phone Code <input id="country-phone-code" data-automation-id="country-phone-code" /></label><br />
+    <label>Phone Number <input id="phone-number" name="phone" data-automation-id="phone-number" /></label><br />
+    <label>City <input id="city" name="city" data-automation-id="addressSection_city" /></label><br />
+    <div data-automation-id="formField-state">
+      <span>State</span>
+      <button type="button" id="state-widget" data-automation-id="addressSection_countryRegion">Illinois</button>
+      <div id="state-list" hidden role="listbox">
+        <input id="state-filter" data-automation-id="searchBox" placeholder="Search" />
+        <div role="option">Illinois</div>
+        <div role="option">New York</div>
+        <div role="option">California</div>
+      </div>
+    </div>
+    <label>Postal Code <input id="postal" data-automation-id="addressSection_postalCode" /></label>
+    <div id="postal-error" hidden>Postal code is not valid for the selected state</div>
+    <div data-automation-id="formField-previouslyWorked">
+      Have you previously worked at this company?
+      <label><input type="radio" name="prev" value="Yes" /> Yes</label>
+      <label><input type="radio" name="prev" value="No" /> No</label>
+      <input data-automation-id="employee-id" id="employee-id" hidden />
+      <input data-automation-id="manager" id="manager" hidden />
+    </div>
+    <div data-automation-id="formField-workAuth">
+      Are you legally authorized to work in the United States?
+      <button type="button" id="auth-q" data-automation-id="workAuthPrompt">Select One</button>
+      <div id="auth-list" hidden role="listbox">
+        <input id="auth-filter" data-automation-id="searchBox" placeholder="Search" />
+        <div role="option">Yes</div>
+        <div role="option">No</div>
+      </div>
+    </div>
+    <button type="button" id="next-personal">Next</button>
+  </form>
+
+  <form id="experience" data-step="experience" hidden>
+    <h2>My Experience</h2>
+    <label>School <input id="school" name="school" /></label><br />
+    <div data-automation-id="formField-degree">
+      Degree
+      <button type="button" id="degree-btn" data-automation-id="education-degree">Select One</button>
+      <div id="degree-list" hidden role="listbox">
+        <input id="degree-filter" data-automation-id="searchBox" placeholder="Search" />
+        <div role="option">Bachelor of Science (B.S.)</div>
+        <div role="option">B.S. Computer Science</div>
+        <div role="option">Master of Science</div>
+      </div>
+    </div>
+    <div data-automation-id="formField-fos">
+      <span>Field of Study</span>
+      <button type="button" id="fos-btn" data-automation-id="fieldOfStudy">Select One</button>
+      <div id="fos-list" hidden role="listbox">
+        <input id="fos-filter" data-automation-id="searchBox" placeholder="Search" />
+        <div role="option">Computer Science</div>
+        <div role="option">Mathematics</div>
+      </div>
+    </div>
+    <label>Resume/CV <input id="resume" name="resume" type="file" /></label><br />
+    <label>LinkedIn Profile <input id="linkedin" name="linkedin" /></label><br />
+    <button type="button" id="next-experience">Next</button>
+  </form>
+
+  <form id="review" data-step="review" hidden onsubmit="window.__submitted = true; return false;">
+    <h2>Review</h2>
+    <p>Review your application</p>
+    <button type="submit" id="submit-app">Submit Application</button>
+  </form>
+
+  <script>
+    function show(id) {
+      document.querySelectorAll("form").forEach((f) => { f.hidden = true; });
+      document.getElementById(id).hidden = false;
+    }
+    function wirePrompt(btnId, listId, filterId) {
+      const btn = document.getElementById(btnId);
+      const list = document.getElementById(listId);
+      const filter = document.getElementById(filterId);
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        list.hidden = false;
+        filter.focus();
+      });
+      filter.addEventListener("input", () => {
+        const q = filter.value.toLowerCase();
+        list.querySelectorAll("[role=option]").forEach((o) => {
+          o.hidden = q && !o.textContent.toLowerCase().includes(q);
+        });
+      });
+      list.querySelectorAll("[role=option]").forEach((o) => {
+        o.addEventListener("click", () => {
+          btn.textContent = o.textContent.trim();
+          list.hidden = true;
+        });
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") list.hidden = true;
+      });
+      document.addEventListener("click", (e) => {
+        if (list.hidden) return;
+        if (list.contains(e.target) || btn.contains(e.target)) return;
+        list.hidden = true;
+      });
+    }
+    wirePrompt("state-widget", "state-list", "state-filter");
+    wirePrompt("auth-q", "auth-list", "auth-filter");
+    wirePrompt("degree-btn", "degree-list", "degree-filter");
+    wirePrompt("fos-btn", "fos-list", "fos-filter");
+    document.getElementById("postal").addEventListener("input", () => {
+      const st = document.getElementById("state-widget").textContent.trim();
+      document.getElementById("postal-error").hidden = st === "New York";
+    });
+    document.querySelectorAll("input[name=prev]").forEach((r) => {
+      r.addEventListener("change", () => {
+        const showEmp = r.value === "Yes" && r.checked;
+        document.getElementById("employee-id").hidden = !showEmp;
+        document.getElementById("manager").hidden = !showEmp;
+      });
+    });
+    document.getElementById("accept-cookies").onclick = () => {
+      document.getElementById("cookie-banner").hidden = true;
+    };
+    (function bindControlledEmail() {
+      const el = document.getElementById("email");
+      let stored = "";
+      const proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      Object.defineProperty(el, "value", {
+        configurable: true,
+        get() { return stored; },
+        set(_v) { /* React-like: ignore unsafe assignment */ }
+      });
+      el.addEventListener("input", () => { stored = proto.get.call(el); });
+      el.addEventListener("change", () => { stored = proto.get.call(el); });
+    })();
+    document.getElementById("auth").addEventListener("submit", (e) => {
+      e.preventDefault();
+      window.__createClicked = true;
+      const email = document.getElementById("email").value.trim();
+      const pw = document.getElementById("password").value;
+      const verify = document.getElementById("verifyPassword").value;
+      const consent = document.getElementById("consent").checked;
+      if (!email) {
+        document.getElementById("email-error").textContent = "Error: Please enter a valid email";
+        window.__createAccepted = false;
+        return false;
+      }
+      if (!consent || !pw || pw !== verify) {
+        window.__createAccepted = false;
+        return false;
+      }
+      window.__createAccepted = true;
+      show("personal");
+      return false;
+    });
+    document.getElementById("open-signin").onclick = () => {
+      window.__signInClicked = true;
+      document.getElementById("signin-overlay").hidden = false;
+    };
+    document.getElementById("next-personal").onclick = () => show("experience");
+    document.getElementById("next-experience").onclick = () => show("review");
+  </script>
+</body>
+</html>

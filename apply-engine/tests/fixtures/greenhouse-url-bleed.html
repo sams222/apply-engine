@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Greenhouse URL bleed fixture (Five Rings–style)</title>
+</head>
+<body>
+  <!-- decoy outside the application form: must not be filled -->
+  <div id="decoy">
+    <label>LinkedIn <input id="decoy-linkedin" name="decoy_linkedin" value="44718334008" /></label>
+  </div>
+
+  <form id="application-form" onsubmit="window.__submitted = true; return false;">
+    <h1>Summer Intern Application</h1>
+
+    <label>First Name <input id="first_name" name="first_name" /></label><br />
+    <label>Last Name <input id="last_name" name="last_name" /></label><br />
+    <label>Email <input id="email" name="email" type="email" /></label><br />
+    <label>Phone <input id="phone" name="phone" type="tel" value="" /></label><br />
+
+    <!-- Real URL fields; LinkedIn starts with phone-like stale digits (stickiness bug) -->
+    <label>LinkedIn Profile
+      <input id="linkedin" name="question_linkedin" type="text" value="44718334008" />
+    </label><br />
+    <label>GitHub URL
+      <input id="github" name="question_github" type="url" value="44718332008" />
+    </label><br />
+
+    <label>Resume/CV <input id="resume" name="resume" type="file" /></label><br />
+
+    <label>School <input id="school" name="school" /></label><br />
+    <label>Degree <input id="degree" name="degree" /></label><br />
+
+    <label>Discipline*
+      <select id="discipline" name="discipline" required>
+        <option value=""></option>
+        <option>Computer Science</option>
+        <option>Electrical Engineering</option>
+        <option>Mathematics</option>
+        <option>Physics</option>
+        <option>Other</option>
+      </select>
+    </label><br />
+
+    <fieldset>
+      <legend>How did you first hear about Five Rings?*</legend>
+      <!-- Wrong-field bleed targets: labels match linkedin/github aliases but are checkboxes -->
+      <label><input type="checkbox" id="hear_linkedin" name="how_hear" value="44718334008" /> LinkedIn</label>
+      <label><input type="checkbox" id="hear_github" name="how_hear" value="44718332008" /> GitHub</label>
+      <label><input type="checkbox" id="hear_other" name="how_hear" value="44718339008" /> Other</label>
+    </fieldset>
+
+    <label>Are you authorized to work in the United States?
+      <select id="work_auth" name="work_authorized">
+        <option value=""></option>
+        <option>Yes</option>
+        <option>No</option>
+      </select>
+    </label><br />
+
+    <button type="submit" id="submit-app">Submit Application</button>
+  </form>
+</body>
+</html>

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Engineering Intern @ Decagon</title>
+</head>
+<body>
+  <h1>Engineering Intern (Summer 2027)</h1>
+  <div id="jd">
+    <button id="apply-cta" type="button">Apply for this Job</button>
+  </div>
+  <div id="app" style="display:none">
+    <label>First and Last Name <input id="_systemfield_name" name="_systemfield_name" placeholder="Type here..." /></label><br />
+    <label>Email <input id="_systemfield_email" name="_systemfield_email" type="email" /></label><br />
+    <label>Resume <input id="_systemfield_resume" name="_systemfield_resume" type="file" /></label><br />
+    <label>LinkedIn <input id="li" name="linkedin" /></label><br />
+    <label>School <input id="school" name="school" /></label><br />
+    <textarea id="g-recaptcha-response" name="g-recaptcha-response" style="display:none"></textarea>
+    <button id="submit-app" class="_submitButton_5yu8i_411 ashby-application-form-submit-button" type="button" disabled>Submit Application</button>
+  </div>
+  <script>
+    const cta = document.getElementById('apply-cta');
+    const app = document.getElementById('app');
+    const name = document.getElementById('_systemfield_name');
+    const submit = document.getElementById('submit-app');
+    function sync() {
+      submit.disabled = !(name.value || '').trim();
+    }
+    cta.addEventListener('click', () => {
+      document.getElementById('jd').style.display = 'none';
+      app.style.display = 'block';
+      sync();
+    });
+    name.addEventListener('input', sync);
+    submit.addEventListener('click', () => { window.__submitted = true; });
+  </script>
+</body>
+</html>

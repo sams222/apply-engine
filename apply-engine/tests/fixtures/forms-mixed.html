@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<body>
+<form id="app">
+  <div class="field-wrapper"><label for="first_name">First Name*</label><input id="first_name" type="text" required></div>
+  <div class="field-wrapper"><label for="email">Email*</label><input id="email" type="text" required></div>
+  <div class="field-wrapper"><label for="auth">Are you legally authorized to work in the United States?*</label>
+    <select id="auth" required><option>Select...</option><option>Yes</option><option>No</option></select></div>
+
+  <div class="ashby-application-form-field-entry">
+    <label class="ashby-application-form-question-title">Will you now or in the future require visa sponsorship?</label>
+    <div><button type="button" class="opt">Yes</button><button type="button" class="opt">No</button></div>
+  </div>
+
+  <fieldset><legend>Gender</legend>
+    <label><input type="radio" name="gender" value="f"> Female</label>
+    <label><input type="radio" name="gender" value="m"> Male</label>
+    <label><input type="radio" name="gender" value="d"> Decline to self-identify</label>
+  </fieldset>
+
+  <div class="ashby-application-form-field-entry">
+    <label class="ashby-application-form-question-title">How did you hear about this opportunity? (select all that apply)</label>
+    <label><input type="checkbox" name="LinkedIn"> LinkedIn</label>
+    <label><input type="checkbox" name="Acme Website"> Acme Website</label>
+  </div>
+
+  <div class="application-question"><label><input type="checkbox" name="consent[sms]"> I agree to receive SMS text messages</label></div>
+  <div class="application-question"><label><input type="checkbox" name="ack" required> I acknowledge the privacy notice</label></div>
+
+  <div class="field-wrapper"><label for="loc">Current Location*</label>
+    <input id="loc" role="combobox" aria-autocomplete="list" required>
+    <div id="menu" role="listbox"></div>
+  </div>
+
+  <div class="field-wrapper"><label for="why">Why do you want to work at Acme?*</label><textarea id="why" required></textarea></div>
+</form>
+<script>
+  document.querySelectorAll('button.opt').forEach(b => b.addEventListener('click', () => {
+    b.parentElement.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', 'false'));
+    b.setAttribute('aria-pressed', 'true');
+  }));
+  const CITIES = ['New York City, New York, United States', 'New York Mills, Minnesota, United States', 'Newark, New Jersey, United States'];
+  const loc = document.getElementById('loc');
+  const menu = document.getElementById('menu');
+  let active = 0;
+  const render = () => {
+    const q = loc.value.toLowerCase();
+    const hits = q ? CITIES.filter(c => c.toLowerCase().includes(q)) : [];
+    menu.innerHTML = hits.map((c, i) => `<div role="option" aria-selected="${i === active}">${c}</div>`).join('');
+  };
+  loc.addEventListener('input', () => { active = 0; render(); });
+  // Closes on blur, so a mouse click on an option never lands (the Ashby behaviour).
+  loc.addEventListener('blur', () => { menu.innerHTML = ''; });
+  loc.addEventListener('keydown', e => {
+    const opts = [...menu.querySelectorAll('[role=option]')];
+    if (e.key === 'ArrowDown') { active = Math.min(active + 1, opts.length - 1); render(); e.preventDefault(); }
+    if (e.key === 'Enter' && opts[active]) { loc.value = opts[active].textContent; menu.innerHTML = ''; e.preventDefault(); }
+  });
+</script>
+</body>
+</html>

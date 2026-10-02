@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head><title>Waymo Intern Apply</title></head>
+<body>
+  <h1>2027 Summer Intern, BS/MS, Software Engineer</h1>
+  <!-- Video.js caption noise (off-form) -->
+  <div class="vjs-modal" style="position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden">
+    <label>Color <select id="vjs_select_535"><option value="#FFF">White</option><option>Black</option></select></label>
+    <label>Opacity <select id="vjs_select_540"><option value="1">Opaque</option><option>Semi-Transparent</option></select></label>
+    <label>Font Size <select id="vjs_select_585"><option>100%</option></select></label>
+    <label>Text Edge Style <select id="vjs_select_604"><option>None</option></select></label>
+    <label>Font Family <select id="vjs_select_619"><option>Proportional Sans-Serif</option></select></label>
+  </div>
+
+  <!-- Job alert chrome -->
+  <label>Please choose the department(s)
+    <select id="form_departments" multiple hidden><option>Software Engineering</option></select>
+  </label>
+  <label>Departments <input id="form_departments-selectized" type="text" /></label>
+  <label>Locations <input id="form_locations-selectized" type="text" /></label>
+
+  <form id="application">
+    <label>First Name (required) <input name="first_name" id="first_name" /></label>
+    <label>Last Name (required) <input name="last_name" id="last_name" /></label>
+    <label>Email (required) <input type="email" name="email" id="email" /></label>
+    <label>Phone Number (required) <input type="tel" name="phone" id="phone" /></label>
+    <label>Resume (required) <input type="file" name="resume" id="resume" /></label>
+    <label>LinkedIn Profile <input name="linkedin" id="linkedin" /></label>
+
+    <label>How did you hear about this opportunity?
+      <select id="how_heard" name="how_heard">
+        <option value=""></option>
+        <option value="li">LinkedIn</option>
+        <option value="sm">Social Media (Facebook, Twitter, etc.)</option>
+        <option value="ot">Other</option>
+      </select>
+    </label>
+
+    <label>Do you require work authorization? (required)
+      <select id="req_auth" name="require_work_authorization" required>
+        <option value=""></option>
+        <option value="y">Yes</option>
+        <option value="n">No</option>
+        <option value="u">Unknown</option>
+      </select>
+    </label>
+
+    <label>If yes, what kind? (If you do not require work authorization sponsorship please select Not Applicable.) (required)
+      <select id="auth_kind" name="auth_kind" required>
+        <option value=""></option>
+        <option value="cpt">CPT</option>
+        <option value="opt">OPT</option>
+        <option value="na">Not applicable</option>
+      </select>
+    </label>
+
+    <label>Would you require an export license under the circumstances described below? (required)
+      <select id="export" name="export_license" required>
+        <option value=""></option>
+        <option value="y">Yes</option>
+        <option value="n">No</option>
+      </select>
+    </label>
+
+    <label>Are you a current or former Alphabet employee, intern, vendor, contractor, or temp (including Google and other Alphabet subsidiaries)? (required)
+      <select id="alphabet" name="alphabet" required>
+        <option value=""></option>
+        <option value="cur">Current Alphabet Employee or Intern</option>
+        <option value="never">Never worked at Alphabet</option>
+      </select>
+    </label>
+
+    <label>Please review and acknowledge our Candidate Privacy Policy linked below: (required)
+      <select id="privacy" name="privacy" required>
+        <option value=""></option>
+        <option value="ack">I acknowledge that I have read and understood the terms of the Waymo Applicant and Candidate Privacy Policy.</option>
+      </select>
+    </label>
+
+    <label>Please provide your full legal name as it appears on your government ID (required)
+      <input id="legal_name" name="legal_name" />
+    </label>
+
+    <label>To ensure a fair and accurate assessment of each candidate's unique capabilities, Waymo prohibits the use of unauthorized outside assistance during the interview process. This includes, but is not limited to, artificial intelligence (AI) tools, generative software, or third-party resources, unless explicitly authorized by the hiring team. By submitting this application, you acknowledge and agree to adhere to these guidelines. (required)
+      <select id="ai_ack" name="ai_ack" required>
+        <option value=""></option>
+        <option value="ack">I acknowledge the above policies</option>
+      </select>
+    </label>
+
+    <label>Please provide the state/region in which you currently reside. (required)
+      <select id="reside_state" name="reside_state" required>
+        <option value=""></option>
+        <option value="ny">New York</option>
+        <option value="il">Illinois</option>
+        <option value="other">Another State in the US</option>
+      </select>
+    </label>
+
+    <label>End date (required)
+      <input type="number" id="end_month" name="end_month" placeholder="MM" required />
+      <input type="number" id="end_year" name="end_year" placeholder="YYYY" required />
+    </label>
+
+    <button type="submit">Submit application</button>
+  </form>
+</body>
+</html>

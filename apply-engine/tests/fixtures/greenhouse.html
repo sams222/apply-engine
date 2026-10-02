@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Greenhouse demo application</title>
+</head>
+<body>
+  <h1>Software Engineering Intern</h1>
+  <form id="application-form" onsubmit="window.__submitted = true; return false;">
+    <label>First Name <input id="first_name" name="first_name" /></label><br />
+    <label>Last Name <input id="last_name" name="last_name" /></label><br />
+    <label>Email <input id="email" name="email" type="email" /></label><br />
+    <label>Phone <input id="phone" name="phone" /></label><br />
+    <label>LinkedIn Profile <input id="linkedin" name="question_linkedin" /></label><br />
+    <label>GitHub <input id="github" name="github" /></label><br />
+    <label>Resume/CV <input id="resume" name="resume" type="file" /></label><br />
+    <label>GPA <input id="gpa" name="gpa" /></label><br />
+    <label>Are you authorized to work in the United States?
+      <select id="work_auth" name="work_authorized">
+        <option value=""></option>
+        <option>Yes</option>
+        <option>No</option>
+      </select>
+    </label><br />
+    <label>Will you now or in the future require visa sponsorship?
+      <select id="sponsorship" name="sponsorship">
+        <option value=""></option>
+        <option>Yes</option>
+        <option>No</option>
+      </select>
+    </label><br />
+    <label>Why do you want to work here?
+      <textarea id="why" name="comments" rows="4"></textarea>
+    </label><br />
+    <button type="submit" id="submit-app">Submit Application</button>
+  </form>
+</body>
+</html>

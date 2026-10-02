@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy to <data-tree>/do-not-retry.json. motorola/doordash/bedrock are also hard-coded as SEED in apply_engine/retry_policy.py and cannot be removed by editing this file.",
+  "companies": [
+    "motorola",
+    "doordash",
+    "bedrock"
+  ]
+}

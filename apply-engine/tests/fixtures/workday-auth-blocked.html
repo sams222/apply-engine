@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Workday auth blocked (email will not stick)</title>
+</head>
+<body>
+  <button type="button" id="accept-cookies">Accept Cookies</button>
+  <form id="auth">
+    <h2>Create Account</h2>
+    <label>Email Address <input id="email" name="email" type="email" data-automation-id="email" /></label>
+    <div id="email-error"></div>
+    <label>Password <input id="password" name="password" type="password" /></label><br />
+    <label>Verify New Password <input id="verifyPassword" name="verifyPassword" type="password" /></label><br />
+    <label>
+      <input type="checkbox" id="consent" name="consent" />
+      Yes, I have read and consent to the terms and conditions
+    </label><br />
+    <button type="submit" id="create-account">Create Account</button>
+  </form>
+  <form id="personal" hidden>
+    <h2>My Information</h2>
+    <label>First Name <input id="first_name" name="first_name" data-automation-id="legalName--firstName" /></label>
+  </form>
+  <script>
+    document.getElementById("accept-cookies").onclick = (e) => { e.currentTarget.hidden = true; };
+    (function refuseEmail() {
+      const el = document.getElementById("email");
+      const proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      const wipe = () => proto.set.call(el, "");
+      el.addEventListener("input", wipe, true);
+      el.addEventListener("change", wipe, true);
+    })();
+    document.getElementById("auth").addEventListener("submit", (e) => {
+      e.preventDefault();
+      window.__createClicked = true;
+      const email = document.getElementById("email").value.trim();
+      if (!email) {
+        document.getElementById("email-error").textContent = "Error: Please enter a valid email";
+        window.__createAccepted = false;
+        return false;
+      }
+      window.__createAccepted = true;
+      document.getElementById("auth").hidden = true;
+      document.getElementById("personal").hidden = false;
+      return false;
+    });
+  </script>
+</body>
+</html>
