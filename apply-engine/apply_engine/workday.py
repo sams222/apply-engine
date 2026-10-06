@@ -13,6 +13,10 @@ from apply_engine.util import dump_json, load_json, now_iso
 PASSWORD_ENV = "WORKDAY_DEFAULT_PASSWORD"
 EMAIL_ENV = "WORKDAY_EMAIL"
 
+# Standalone Sign In walls (not the apply-wizard Create Account step).
+# Path segments only — job titles containing "login" as a substring must not match.
+_SIGN_IN_PATH_TOKENS = frozenset({"login", "log-in", "signin", "sign-in", "sign_in"})
+
 
 class WorkdayConfigError(RuntimeError):
     """Workday cannot proceed (usually a missing password env var)."""
@@ -84,20 +88,67 @@ def known_account_email(path: Path, url: str) -> str | None:
     return None
 
 
+def is_standalone_sign_in_url(url: str) -> bool:
+    """True for Workday login walls like /login, /private/login, /signin."""
+    path = (urlparse(url or "").path or "").lower()
+    return any(part in _SIGN_IN_PATH_TOKENS for part in path.split("/") if part)
+
+
+def looks_like_standalone_sign_in(
+    *,
+    url: str = "",
+    heading_sign_in: bool = False,
+    heading_create_account: bool = False,
+    verify_password_visible: bool = False,
+    visible_password_count: int = 0,
+    email_visible: bool = False,
+    sign_in_submit_visible: bool = False,
+    create_account_submit_visible: bool = False,
+) -> bool:
+    """True when the page is a Sign In wall, not the Create Account wizard.
+
+    URL /login (incl. /private/login) plus a Sign In heading or auth widgets is
+    enough. Overlay Sign In forms also ship a Create Account button, so that
+    button alone does not veto Sign In.
+    """
+    _ = create_account_submit_visible
+    if verify_password_visible or visible_password_count >= 2:
+        return False
+    if is_standalone_sign_in_url(url):
+        return bool(
+            heading_sign_in
+            or email_visible
+            or visible_password_count == 1
+            or sign_in_submit_visible
+        )
+    if heading_sign_in:
+        return True
+    if heading_create_account:
+        return False
+    return bool(email_visible and visible_password_count == 1 and sign_in_submit_visible)
+
+
 def prefer_sign_in(
     *,
     known: bool,
     verify_password_visible: bool,
     visible_password_count: int,
+    standalone_sign_in: bool = False,
 ) -> bool:
     """Prefer Sign In only when the visible form is clearly sign-in.
 
     A Create Account page (Verify New Password, or 2+ password fields) must
     stay on the create path even if workday-accounts.json already has this tenant.
+    A standalone Sign In wall (/private/login, heading Sign In, one password)
+    is Sign In even when the tenant is not yet in workday-accounts.json.
     """
-    if not known:
-        return False
     if verify_password_visible:
+        return False
+    if visible_password_count >= 2:
+        return False
+    if standalone_sign_in and visible_password_count <= 1:
+        return True
+    if not known:
         return False
     return visible_password_count == 1
 

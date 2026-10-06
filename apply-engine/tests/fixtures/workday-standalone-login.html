@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Sign In | Expedia</title>
+</head>
+<body>
+  <!-- Expedia-shaped Workday standalone Sign In (/en-US/private/login).
+       Fragile #input-N ids on purpose; fill must prefer data-automation-id. -->
+  <header>
+    <span>e</span>
+    <a href="/jobs">Search for Jobs</a>
+  </header>
+  <main>
+    <h1>Sign In</h1>
+    <form id="login" action="/en-US/private" method="post">
+      <label for="input-4">Email Address <span aria-hidden="true">*</span></label>
+      <input id="input-4" data-automation-id="email" type="text" />
+
+      <label for="input-5">Password <span aria-hidden="true">*</span></label>
+      <input id="input-5" data-automation-id="password" type="password" />
+
+      <label for="hp">Enter website. This input is for robots only, do not enter if you're human.</label>
+      <input id="hp" name="website" data-automation-id="beecatcher" type="text"
+             style="width:1px;height:0px;display:block;visibility:visible;opacity:1" />
+
+      <div style="position:relative;display:inline-block">
+        <button type="submit" id="signIn" data-automation-id="signInSubmitButton">Sign In</button>
+        <div data-automation-id="click_filter"
+             style="position:absolute;inset:0;cursor:pointer"></div>
+      </div>
+      <p>Don't have an account yet? <a href="/create">Create Account</a></p>
+      <p><a href="/forgot">Forgot your password?</a></p>
+    </form>
+  </main>
+  <div id="private-home" hidden>
+    <h2>My Information</h2>
+    <label>First Name <input id="first_name" name="first_name" data-automation-id="legalName--firstName" /></label>
+    <p>My Applications</p>
+  </div>
+  <script>
+    document.getElementById("login").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const email = document.querySelector('[data-automation-id="email"]').value.trim();
+      const pw = document.querySelector('[data-automation-id="password"]').value;
+      const honey = document.querySelector('[data-automation-id="beecatcher"]').value;
+      window.__signInClicked = true;
+      window.__honeypotValue = honey;
+      if (!email || !pw) {
+        window.__signedIn = false;
+        return false;
+      }
+      window.__signedIn = true;
+      document.getElementById("login").hidden = true;
+      document.querySelector("h1").hidden = true;
+      document.getElementById("private-home").hidden = false;
+      return false;
+    });
+    document.querySelector('[data-automation-id="click_filter"]').addEventListener("click", () => {
+      document.getElementById("signIn").click();
+    });
+  </script>
+</body>
+</html>

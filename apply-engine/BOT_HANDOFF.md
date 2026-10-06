@@ -21,7 +21,8 @@ export WD=scripts/with-workday-secret.py
 Secrets come from the platform's secret settings as environment variables,
 `WORKDAY_DEFAULT_PASSWORD` and `DEEPSEEK_API_KEY`. Check they exist with
 `test -n "$WORKDAY_DEFAULT_PASSWORD" && test -n "$DEEPSEEK_API_KEY" && echo ok`;
-never echo their values.
+never echo their values. Workday Sign In walls (`/private/login` and the apply
+wizard) use that password automatically; never type it into the browser yourself.
 
 ## Private files (every session)
 

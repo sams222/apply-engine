@@ -68,6 +68,8 @@ AUTH_WIDGET_HEADER_WAIT_MS = 8_000
 # After sign-in the stepper paints before either the form or the soft-fail
 # interstitial. Wait this long for one of those, not for the step label.
 WIZARD_SURFACE_WAIT_MS = 8_000
+# After submitting standalone Sign In, wait this long to leave /login.
+SIGN_IN_REDIRECT_WAIT_MS = 8_000
 
 
 
@@ -185,6 +187,19 @@ def fill_application(
 
             ashby_ready = True
             if ats == ATS_WORKDAY:
+                from apply_engine.workday import require_password, workday_email
+
+                wd_email = workday_email(profile)
+                wd_password = require_password()
+                tenant_path = Path(tenant_map_path) if tenant_map_path else None
+                _clear_workday_login_wall(
+                    page,
+                    email=wd_email,
+                    password=wd_password,
+                    notes=notes,
+                    skipped=skipped,
+                    tenant_map_path=tenant_path,
+                )
                 _run_workday(
                     page,
                     url=url,
@@ -194,11 +209,20 @@ def fill_application(
                     filled=filled,
                     skipped=skipped,
                     notes=notes,
-                    tenant_map_path=Path(tenant_map_path) if tenant_map_path else None,
+                    tenant_map_path=tenant_path,
                     screenshot_path=screenshot_path,
                     step_shots=step_shots,
                     step_snapshots=step_snapshots,
                     pool_path=pool_path,
+                )
+                # confirm / My Applications / mid-flow redirects can bounce to /private/login
+                _clear_workday_login_wall(
+                    page,
+                    email=wd_email,
+                    password=wd_password,
+                    notes=notes,
+                    skipped=skipped,
+                    tenant_map_path=tenant_path,
                 )
             elif ats in (ATS_ASHBY, ATS_GREENHOUSE, ATS_LEVER) and not html:
                 if _enter_single_page_application(page, ats, notes):
@@ -886,6 +910,7 @@ def _enter_workday_application(page: Any, url: str, notes: list) -> bool:
     reload blank shells, then fall back to apply URLs + header Sign In.
     """
     from apply_engine.workday import (
+        is_standalone_sign_in_url,
         page_looks_like_job_listing,
         page_looks_like_workday_form,
         workday_apply_urls,
@@ -898,7 +923,15 @@ def _enter_workday_application(page: Any, url: str, notes: list) -> bool:
         except Exception:
             return ""
 
+    def _page_url() -> str:
+        try:
+            return page.url or ""
+        except Exception:
+            return ""
+
     def _ready() -> bool:
+        if is_standalone_sign_in_url(_page_url()) or _on_sign_in_page(page):
+            return True
         if _auth_form_present(page):
             return True
         if page_looks_like_workday_form(_body()):
@@ -941,6 +974,9 @@ def _enter_workday_application(page: Any, url: str, notes: list) -> bool:
         return _ready()
 
     if _ready():
+        if is_standalone_sign_in_url(_page_url()) or _on_sign_in_page(page):
+            notes.append("workday entry: already on standalone Sign In")
+            _wait_auth_widgets(page, AUTH_WIDGET_WAIT_MS)
         return True
 
     # 1) Job posting first (most reliable for Motorola)
@@ -1210,42 +1246,60 @@ def _run_workday(
         notes.append("CAPTCHA or 2FA present — Workday cannot continue unattended")
         return
 
-    widgets_ready = _ensure_workday_auth_widgets(page, notes)
-    if not widgets_ready:
-        if _my_information_visible_anywhere(page):
-            notes.append("workday: already on My Information — skipping auth")
-        else:
-            flags = _blank_auth_shell_flags(page)
-            blank = is_blank_auth_shell(
-                step_active=bool(flags["step_active"]),
-                email_input_count=int(flags["email_input_count"]),
-                password_input_count=int(flags["password_input_count"]),
-            )
-            skipped.append(
-                {
-                    "label": "workday_auth",
-                    "reason": "blank Create Account/Sign In shell — no email/password widgets",
-                }
-            )
-            notes.append("no Workday auth form on this page")
-            if blank:
-                notes.append(
-                    "workday_auth: blank Create Account/Sign In shell after wait/reload/header Sign In"
-                )
-            notes.append("workday auth failed — not continuing wizard (needs_user)")
-            filled[:] = drop_unconfirmed_auth_filled(filled)
-            return
-
-    signed_in = _workday_auth(
+    if not _clear_workday_login_wall(
         page,
-        url=url,
         email=email,
         password=password,
-        filled=filled,
         notes=notes,
         skipped=skipped,
         tenant_map_path=tenant_map_path,
-    )
+    ):
+        filled[:] = drop_unconfirmed_auth_filled(filled)
+        notes.append("workday auth failed — not continuing wizard (needs_user)")
+        return
+
+    already_in_app = _my_information_visible_anywhere(page) or _application_controls_visible(page)
+    if already_in_app:
+        notes.append("workday: already past Sign In — skipping create-account wizard")
+        signed_in = True
+    else:
+        widgets_ready = _ensure_workday_auth_widgets(page, notes)
+        if not widgets_ready:
+            if _my_information_visible_anywhere(page):
+                notes.append("workday: already on My Information — skipping auth")
+                signed_in = True
+            else:
+                flags = _blank_auth_shell_flags(page)
+                blank = is_blank_auth_shell(
+                    step_active=bool(flags["step_active"]),
+                    email_input_count=int(flags["email_input_count"]),
+                    password_input_count=int(flags["password_input_count"]),
+                )
+                skipped.append(
+                    {
+                        "label": "workday_auth",
+                        "reason": "blank Create Account/Sign In shell — no email/password widgets",
+                    }
+                )
+                notes.append("no Workday auth form on this page")
+                if blank:
+                    notes.append(
+                        "workday_auth: blank Create Account/Sign In shell after wait/reload/header Sign In"
+                    )
+                notes.append("workday auth failed — not continuing wizard (needs_user)")
+                filled[:] = drop_unconfirmed_auth_filled(filled)
+                return
+        else:
+            signed_in = _workday_auth(
+                page,
+                url=url,
+                email=email,
+                password=password,
+                filled=filled,
+                notes=notes,
+                skipped=skipped,
+                tenant_map_path=tenant_map_path,
+            )
     if not signed_in:
         filled[:] = drop_unconfirmed_auth_filled(filled)
         notes.append("workday auth failed — not continuing wizard (needs_user)")
@@ -1255,8 +1309,14 @@ def _run_workday(
         # not a sign-in page; _advance already refreshed and recorded needs_user.
         if _on_sign_in_page(page):
             notes.append("workday_auth: still Sign In before MI — retry Sign In fill")
-            _fill_and_submit_sign_in(page, email, password, notes, skipped)
-            page.wait_for_timeout(1500)
+            _clear_workday_login_wall(
+                page,
+                email=email,
+                password=password,
+                notes=notes,
+                skipped=skipped,
+                tenant_map_path=tenant_map_path,
+            )
             if _advance_to_application_fields(page, notes):
                 pass
             else:
@@ -1277,11 +1337,31 @@ def _run_workday(
         if _captcha_or_2fa(page):
             notes.append("CAPTCHA or 2FA present — stopping at current step")
             return
+        if not _clear_workday_login_wall(
+            page,
+            email=email,
+            password=password,
+            notes=notes,
+            skipped=skipped,
+            tenant_map_path=tenant_map_path,
+        ):
+            _park_before_application_fields(filled, skipped, notes, page)
+            return
         # The stepper can be on screen while the step body is still the
         # soft-fail interstitial. Wait for fields, and refresh if the error
         # text is what actually painted.
         if not _advance_to_application_fields(page, notes):
-            return
+            if _on_sign_in_page(page) and _clear_workday_login_wall(
+                page,
+                email=email,
+                password=password,
+                notes=notes,
+                skipped=skipped,
+                tenant_map_path=tenant_map_path,
+            ) and _advance_to_application_fields(page, notes):
+                pass
+            else:
+                return
         _fill_standard_fields(
             page,
             profile=profile,
@@ -1410,14 +1490,24 @@ def _workday_auth(
     pw_count = len(_visible_password_inputs(root))
     create_mode = verify_visible or pw_count >= 2
     known = known_account_email(tenant_map_path, url) if tenant_map_path else None
+    standalone = _on_sign_in_page(page) and not create_mode
     want_sign_in = prefer_sign_in(
         known=bool(known),
         verify_password_visible=verify_visible,
         visible_password_count=pw_count,
+        standalone_sign_in=standalone,
     )
     # Never click Sign In first on a Create Account page — that opens the overlay
     # with an empty email (Motorola dd7478). Never click Sign In when Verify New
-    # Password is showing.
+    # Password is showing. Standalone /private/login is always Sign In.
+
+    if standalone:
+        notes.append("workday_auth: standalone Sign In form — filling Sign In")
+        if not _fill_and_submit_sign_in(page, email, password, notes, skipped):
+            return False
+        _wait_left_sign_in_page(page)
+        notes.append("workday auth submitted (sign-in)")
+        return True
 
     email_locators = _visible_auth_email_inputs(root)
     if not email_locators:
@@ -1425,6 +1515,8 @@ def _workday_auth(
         notes.append("workday_auth: email field not found")
         return False
     for loc in email_locators:
+        if _locator_is_honeypot(loc):
+            continue
         _fill_react_input(loc, email)
     email_readback = _input_value(email_locators[-1])
     if not emails_match(email_readback, email):
@@ -1763,45 +1855,37 @@ def _my_information_visible_anywhere(page: Any) -> bool:
     return False
 
 
-def _visible_password_inputs(page: Any) -> list[Any]:
-    loc = page.locator("input[type=password]")
+def _locator_is_honeypot(loc: Any) -> bool:
+    meta = _control_meta(loc)
+    try:
+        label = _accessible_name(loc)
+    except Exception:
+        label = ""
+    return is_honeypot(
+        label=label,
+        name=str(meta.get("name") or ""),
+        automation_id=str(meta.get("automation_id") or ""),
+        width=meta.get("width"),
+        height=meta.get("height"),
+    )
+
+
+def _locator_fingerprint(loc: Any) -> str:
+    try:
+        return str(
+            loc.evaluate(
+                "el => [el.getAttribute('data-automation-id') || '', el.id || '', el.name || '', el.type || ''].join('|')"
+            )
+            or ""
+        )
+    except Exception:
+        return str(id(loc))
+
+
+def _collect_visible_inputs(page: Any, locators: list) -> list[Any]:
     out: list[Any] = []
-    try:
-        n = loc.count()
-    except Exception:
-        n = 0
-    for i in range(n):
-        el = loc.nth(i)
-        try:
-            if el.is_visible():
-                out.append(el)
-        except Exception:
-            continue
-    return out
-
-
-def _verify_password_visible(page: Any) -> bool:
-    try:
-        loc = page.get_by_label(VERIFY_PASSWORD_RE)
-        if loc.count() and loc.first.is_visible():
-            return True
-    except Exception:
-        pass
-    try:
-        loc = page.get_by_text(VERIFY_PASSWORD_RE)
-        return bool(loc.count() and loc.first.is_visible())
-    except Exception:
-        return False
-
-
-def _visible_auth_email_inputs(page: Any) -> list[Any]:
-    seen: list[Any] = []
-    candidates = [
-        page.get_by_label(EMAIL_ADDRESS_RE),
-        page.get_by_label(re.compile(r"^e-?mail", re.I)),
-        page.locator('input[data-automation-id="email"], input[type="email"]'),
-    ]
-    for loc in candidates:
+    seen: set[str] = set()
+    for loc in locators:
         try:
             n = loc.count()
         except Exception:
@@ -1813,9 +1897,53 @@ def _visible_auth_email_inputs(page: Any) -> list[Any]:
                     continue
             except Exception:
                 continue
-            seen.append(el)
-    # de-dupe by object identity isn't reliable; keep order, fill all visible
-    return seen
+            if _locator_is_honeypot(el):
+                continue
+            fp = _locator_fingerprint(el)
+            if fp in seen:
+                continue
+            seen.add(fp)
+            out.append(el)
+    return out
+
+
+def _visible_password_inputs(page: Any) -> list[Any]:
+    return _collect_visible_inputs(
+        page,
+        [
+            page.locator('input[data-automation-id="password"]'),
+            page.locator("input[type=password]"),
+        ],
+    )
+
+
+def _verify_password_visible(page: Any) -> bool:
+    for scope in _iter_dom_scopes(page):
+        try:
+            loc = scope.get_by_label(VERIFY_PASSWORD_RE)
+            if loc.count() and loc.first.is_visible():
+                return True
+        except Exception:
+            pass
+        try:
+            loc = scope.get_by_text(VERIFY_PASSWORD_RE)
+            if loc.count() and loc.first.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _visible_auth_email_inputs(page: Any) -> list[Any]:
+    return _collect_visible_inputs(
+        page,
+        [
+            page.locator('input[data-automation-id="email"]'),
+            page.locator('input[type="email"]'),
+            page.get_by_label(EMAIL_ADDRESS_RE),
+            page.get_by_label(re.compile(r"^e-?mail", re.I)),
+        ],
+    )
 
 
 def _fill_react_input(locator: Any, value: str) -> None:
@@ -1846,6 +1974,8 @@ def _input_value(locator: Any) -> str:
 
 def _fill_auth_passwords(page: Any, password: str) -> None:
     for loc in _visible_password_inputs(page):
+        if _locator_is_honeypot(loc):
+            continue
         _fill_react_input(loc, password)
 
 
@@ -1919,19 +2049,137 @@ def _check_consent(page: Any) -> bool:
         return False
 
 
+def _role_heading_visible(scope: Any, pattern: re.Pattern) -> bool:
+    try:
+        heading = scope.get_by_role("heading", name=pattern)
+        return bool(heading.count() and heading.first.is_visible())
+    except Exception:
+        return False
+
+
+def _auth_submit_visible(page: Any, name: str) -> bool:
+    for scope in _iter_dom_scopes(page):
+        for aid in AUTH_SUBMIT_AIDS.get(name, ()):
+            try:
+                loc = scope.locator(f'button[data-automation-id="{aid}"]')
+                for i in range(min(loc.count(), 3)):
+                    if loc.nth(i).is_visible():
+                        return True
+            except Exception:
+                continue
+        try:
+            loc = scope.get_by_role("button", name=re.compile(rf"^{re.escape(name)}$", re.I))
+            for i in range(min(loc.count(), 3)):
+                if loc.nth(i).is_visible():
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _standalone_sign_in_flags(page: Any) -> dict:
+    try:
+        url = page.url or ""
+    except Exception:
+        url = ""
+    heading_sign_in = False
+    heading_create_account = False
+    email_count = 0
+    pw_count = 0
+    for scope in _iter_dom_scopes(page):
+        if _role_heading_visible(scope, re.compile(r"^sign in$", re.I)):
+            heading_sign_in = True
+        if _role_heading_visible(scope, re.compile(r"^create account", re.I)):
+            heading_create_account = True
+        email_count += len(_visible_auth_email_inputs(scope))
+        pw_count += len(_visible_password_inputs(scope))
+    return {
+        "url": url,
+        "heading_sign_in": heading_sign_in,
+        "heading_create_account": heading_create_account,
+        "verify_password_visible": _verify_password_visible(page),
+        "visible_password_count": pw_count,
+        "email_visible": email_count > 0,
+        "sign_in_submit_visible": _auth_submit_visible(page, "Sign In"),
+        "create_account_submit_visible": _auth_submit_visible(page, "Create Account"),
+    }
+
+
 def _on_sign_in_page(page: Any) -> bool:
-    try:
-        heading = page.get_by_role("heading", name=re.compile(r"^sign in$", re.I))
-        if heading.count() and heading.first.is_visible():
+    from apply_engine.workday import looks_like_standalone_sign_in
+
+    return looks_like_standalone_sign_in(**_standalone_sign_in_flags(page))
+
+
+def _wait_left_sign_in_page(page: Any, timeout_ms: int = SIGN_IN_REDIRECT_WAIT_MS) -> bool:
+    from apply_engine.workday import is_standalone_sign_in_url
+
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000.0
+    while time.monotonic() < deadline:
+        if _my_information_visible_anywhere(page) or _application_controls_visible(page) or _on_review_page(page):
             return True
-    except Exception:
-        pass
+        if not _on_sign_in_page(page):
+            try:
+                if not is_standalone_sign_in_url(page.url or ""):
+                    return True
+            except Exception:
+                return True
+            return True
+        page.wait_for_timeout(250)
+    return (
+        not _on_sign_in_page(page)
+        or _my_information_visible_anywhere(page)
+        or _application_controls_visible(page)
+    )
+
+
+def _clear_workday_login_wall(
+    page: Any,
+    *,
+    email: str,
+    password: str,
+    notes: list,
+    skipped: list,
+    tenant_map_path: Path | None = None,
+) -> bool:
+    """Fill standalone Workday Sign In when a login wall is showing.
+
+    Returns True when we are not stuck on Sign In (never were, or signed in).
+    Returns False if the wall is still up after attempting Sign In.
+    Never invents a password; caller passes WORKDAY_DEFAULT_PASSWORD.
+    """
+    from apply_engine.workday import is_standalone_sign_in_url, known_account_email
+
     try:
-        body = (page.inner_text("body") or "").lower()
+        url = page.url or ""
     except Exception:
-        body = ""
-    if "sign in" in body and not _verify_password_visible(page):
-        return len(_visible_password_inputs(page)) == 1
+        url = ""
+    on_login_url = is_standalone_sign_in_url(url)
+    if not on_login_url and not _on_sign_in_page(page):
+        return True
+    if _verify_password_visible(page) or len(_visible_password_inputs(page)) >= 2:
+        return True
+    if not _auth_widgets_ready_anywhere(page):
+        notes.append("workday_auth: Sign In wall — waiting for widgets")
+        _wait_auth_widgets(page, AUTH_WIDGET_WAIT_MS)
+    if not _auth_widgets_ready_anywhere(page):
+        if on_login_url:
+            notes.append("workday_auth: standalone Sign In URL but no email/password widgets")
+            return False
+        return True
+    if known_account_email(tenant_map_path, url) if tenant_map_path else None:
+        notes.append("workday_auth: known tenant — Sign In (not Create Account)")
+    notes.append("workday_auth: filling standalone Sign In wall")
+    if not _fill_and_submit_sign_in(page, email, password, notes, skipped):
+        return False
+    if _wait_left_sign_in_page(page):
+        notes.append("workday_auth: left standalone Sign In")
+        return True
+    blocker = _workday_blocker(page)
+    if blocker:
+        notes.append(f"needs_user: {blocker}")
+    else:
+        notes.append("workday_auth: still on Sign In after submit")
     return False
 
 
@@ -1939,12 +2187,15 @@ def _fill_and_submit_sign_in(page: Any, email: str, password: str, notes: list, 
     from apply_engine.workday import emails_match
 
     _maybe_dismiss(page)
-    email_locs = _visible_auth_email_inputs(page)
+    root = _auth_scope(page)
+    email_locs = _visible_auth_email_inputs(root)
     if not email_locs:
         skipped.append({"label": "Email Address*", "reason": "Sign In email field not found"})
         notes.append("workday_auth: Sign In email field missing")
         return False
     for loc in email_locs:
+        if _locator_is_honeypot(loc):
+            continue
         _fill_react_input(loc, email)
     email_readback = _input_value(email_locs[-1])
     if not emails_match(email_readback, email):
@@ -1955,8 +2206,8 @@ def _fill_and_submit_sign_in(page: Any, email: str, password: str, notes: list, 
         })
         notes.append(f"workday_auth: Sign In email readback {email_readback!r}")
         return False
-    _fill_auth_passwords(page, password)
-    password_ok, _ = _password_fields_ok(page, need_verify=False)
+    _fill_auth_passwords(root, password)
+    password_ok, _ = _password_fields_ok(root, need_verify=False)
     if not password_ok:
         skipped.append({"label": "password", "reason": "Sign In password empty after fill"})
         return False
