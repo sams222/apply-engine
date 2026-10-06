@@ -227,6 +227,14 @@ def _map_special_question(label_norm: str, *, placeholder: str = "") -> str | No
     if placeholder == "mm" and ("end" in label_norm or "grad" in label_norm or not label_norm):
         return "graduation_month"
 
+    # Authorized-without-sponsorship (West Monroe / Greenhouse) is not need_sponsorship.
+    if (
+        "without" in label_norm
+        and "sponsor" in label_norm
+        and any(t in label_norm for t in ("authori", "eligible", "able to work", "permitted"))
+    ):
+        return "work_authorized_without_sponsorship"
+
     # Sponsorship vs work-authorized (Waymo wording).
     if "require work authorization" in label_norm or (
         "work authorization" in label_norm and "sponsorship" in label_norm
@@ -310,6 +318,12 @@ def profile_value(profile: Profile, key: str) -> str | None:
         return _yes_no(profile.work_authorized_us)
     if key == "need_sponsorship":
         return _yes_no(profile.need_sponsorship)
+    if key == "work_authorized_without_sponsorship":
+        if profile.work_authorized_us is True and profile.need_sponsorship is False:
+            return "Yes"
+        if profile.work_authorized_us is False or profile.need_sponsorship is True:
+            return "No"
+        return None
     if key == "sponsorship_type":
         if profile.need_sponsorship is False:
             return "Not applicable"
@@ -513,6 +527,7 @@ def value_candidates(key: str, desired: str, profile: Profile | None = None) -> 
     if key == "how_heard":
         low = (desired or "").lower()
         # Careers-page spellings first, in the order ATS option lists use them.
+        # Company Website / Career Site beat Relish Careers / job-board names.
         for term in HOW_HEARD_CAREER_TERMS:
             add(term)
         if profile is not None and getattr(profile, "extra", None):
@@ -552,7 +567,7 @@ def value_candidates(key: str, desired: str, profile: Profile | None = None) -> 
         add("Not applicable")
         add("Not Applicable")
         add("N/A")
-    if key in {"need_sponsorship", "work_authorized_us", "export_license"}:
+    if key in {"need_sponsorship", "work_authorized_us", "work_authorized_without_sponsorship", "export_license"}:
         add(desired)
     return out
 
@@ -566,12 +581,17 @@ def pick_select_option(options: list[str], desired: str) -> str | None:
         if opt.strip().lower() == want:
             return opt
     # Careers-page answers are spelled per tenant ("Walmart Careers",
-    # "Company Career Site", "Corporate Website"). Match the shape, not the
-    # exact string, but only when we were actually asked for one.
+    # "Company Career Site", "Corporate Website"). Prefer Company Website /
+    # Career Site over Relish Careers when both exist.
     if want in {t.lower() for t in HOW_HEARD_CAREER_TERMS}:
+        from apply_engine.questions import _how_heard_score
+
+        ranked = sorted(cleaned, key=lambda o: -_how_heard_score(o))
+        if ranked and _how_heard_score(ranked[0]) > 0:
+            return ranked[0]
         for opt in cleaned:
             low = opt.strip().lower()
-            if "career" in low:
+            if "career" in low and "relish" not in low:
                 return opt
         for opt in cleaned:
             low = opt.strip().lower()

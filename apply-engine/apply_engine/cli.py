@@ -192,7 +192,12 @@ def _reviewed_answers(review_dir: Path) -> dict[str, str]:
     return {
         str(row.get("label", "")): str(row.get("value", ""))
         for row in review.get("filled") or []
-        if str(row.get("method", "")).startswith("llm") and row.get("value")
+        if row.get("value") and (
+            str(row.get("method", "")).startswith("llm")
+            or str(row.get("method", "")) in {
+                "radio", "checkboxes", "buttons", "select", "combobox", "already-set", "restick", "only-option",
+            }
+        )
     }
 
 

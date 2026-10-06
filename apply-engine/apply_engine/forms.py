@@ -279,14 +279,81 @@ class FormFiller:
         for _ in range(passes):
             progressed = False
             for g in self.extract():
-                if g["gid"] in self.done or g["gid"] in self.failed or g["kind"] == "file":
+                if g["kind"] == "file":
                     continue
+                if g["gid"] in self.failed:
+                    # Empty comboboxes (Country* with options still loading) retry.
+                    if not (g["kind"] == "combobox" and not (g.get("options") or g.get("current"))):
+                        continue
+                    self.failed.pop(g["gid"], None)
+                if g["gid"] in self.done:
+                    if not self._choice_needs_restick(g):
+                        continue
+                    self.done.discard(g["gid"])
                 if self._fill_group(g):
                     progressed = True
             if not progressed:
                 break
             self.page.wait_for_timeout(600)
+        self._restick_required_radios()
+        self._retry_empty_comboboxes()
         self._report_unanswered()
+
+    def _choice_needs_restick(self, g: dict) -> bool:
+        """True when a previously filled required radio/checkbox group is empty again."""
+        if g["kind"] not in {"radio", "checkboxes", "buttons"}:
+            return False
+        if g.get("current"):
+            return False
+        return bool(g.get("required") or self._previous_choice(g))
+
+    def _previous_choice(self, g: dict) -> str | None:
+        label = (g.get("label") or "")[:160]
+        for row in reversed(self.filled):
+            if row.get("label") == label and row.get("value"):
+                return str(row["value"])
+        return self._saved(g) if self.saved is not None else None
+
+    def _restick_required_radios(self) -> None:
+        """Ashby confirm re-fill can uncheck required radios; re-apply before Submit."""
+        for g in self.extract():
+            if g["kind"] not in {"radio", "checkboxes", "buttons"}:
+                continue
+            if g.get("current") and not g.get("required"):
+                continue
+            want = self._want_for(g)
+            options = g.get("options") or []
+            picks = choose(options, want) if want else []
+            if not picks:
+                prev = self._previous_choice(g)
+                if prev:
+                    by_norm = {norm(o): o for o in options}
+                    if norm(prev) in by_norm:
+                        picks = [by_norm[norm(prev)]]
+                    else:
+                        hits = [o for o in options if norm(prev) in norm(o) or norm(o) in norm(prev)]
+                        picks = hits[:1]
+            if not picks:
+                continue
+            current = {norm(c) for c in g.get("current") or []}
+            if norm(picks[0]) in current:
+                continue
+            self.done.discard(g["gid"])
+            self.failed.pop(g["gid"], None)
+            if want is None:
+                want = Want(key="restick", text=picks[0], terms=picks)
+            self._fill_choice(g, want)
+
+    def _retry_empty_comboboxes(self) -> None:
+        """Greenhouse Country* can paint with [] the first time; wait and retry US."""
+        for g in self.extract():
+            if g["kind"] != "combobox" or g["gid"] in self.done or g.get("current"):
+                continue
+            want = self._want_for(g)
+            if want is None:
+                continue
+            self.failed.pop(g["gid"], None)
+            self._fill_combobox(g, want)
 
     def extract(self) -> list[dict]:
         try:
@@ -487,6 +554,12 @@ class FormFiller:
             picks = picks[:1]
         if picks and multi and not (want and (want.select_all or want.pick)):
             picks = picks[:1]
+        if not picks:
+            prev = self._previous_choice(g)
+            if prev:
+                by_norm = {norm(o): o for o in options}
+                if norm(prev) in by_norm:
+                    picks, method = [by_norm[norm(prev)]], "restick"
         if not picks and not multi:
             picks, method = self._only_option(g, options), "only-option"
         if not picks:
@@ -538,7 +611,14 @@ class FormFiller:
         loc.scroll_into_view_if_needed(timeout=3000)
         loc.click(timeout=4000)
         self.page.wait_for_timeout(450)
-        options = self._visible_options()
+        wait_ms = 7000 if want and want.key in {"country", "location", "city", "state"} else 4000
+        options = self._wait_options(wait_ms)
+        if not options:
+            try:
+                loc.click(timeout=4000)
+            except Exception:
+                pass
+            options = self._wait_options(wait_ms)
         opened = options
         picks = choose(options, want) if (want and options) else []
         searches: list[str] = []
@@ -551,7 +631,7 @@ class FormFiller:
                 break
             loc.fill("", timeout=3000)
             loc.type(term, delay=25, timeout=8000)
-            options = self._wait_options()
+            options = self._wait_options(wait_ms)
             picks = choose(options, want) if options else []
         method = "combobox"
         if not picks:
@@ -568,6 +648,9 @@ class FormFiller:
             method = "llm-pick"
         if not picks:
             self._abandon_combobox(loc)
+            if not (options or opened):
+                # Options never painted — retry on a later pass instead of locking failure.
+                return False
             return self._fail(g, f"no option matched (saw {(options or opened)[:6]})" if want else "unmapped")
         if g.get("multi") and len(picks) > 1:
             return self._fill_multi_combobox(g, loc, picks, want, method)

@@ -194,6 +194,18 @@ def is_blank_auth_shell(
     return bool(step_active)
 
 
+def sso_email_gate_visible(
+    *,
+    email_input_count: int,
+    password_input_count: int,
+    sign_in_with_email_visible: bool,
+) -> bool:
+    """True when Google/LinkedIn/'Sign in with email' is showing and no email/password fields."""
+    if email_input_count > 0 or password_input_count > 0:
+        return False
+    return bool(sign_in_with_email_visible)
+
+
 def should_reload_blank_auth_shell(
     *,
     is_blank: bool,

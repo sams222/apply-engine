@@ -19,6 +19,8 @@ def _profile() -> Profile:
         city="New York",
         state="NY",
         country="United States",
+        address_line1="46 W 86th St",
+        postal_code="10024",
         school="Hudson State University",
         degree="Bachelor of Science in Computer Science",
         gpa="3.9",
@@ -211,3 +213,115 @@ def test_pay_uses_posted_floor_then_fallback():
     yearly = Context(description="Base salary range: $120,000 - $150,000 USD per year", pool=POOL, today=date(2026, 9, 26))
     assert resolve("Desired salary", _rich_profile(), yearly).text == "$120,000/year"
     assert resolve("Desired salary", _rich_profile(), CTX).text == "$25/hour"
+
+
+WEST_MONROE_AUTH = (
+    "Are you legally authorized to work in the US now and in the future "
+    "for any employer without visa sponsorship?"
+)
+
+
+def test_norm_strips_trailing_colon_and_asterisk():
+    from apply_engine.questions import norm
+
+    assert norm("Address Line 1:*") == "address line 1"
+    assert norm("City:*") == "city"
+    assert norm("Country*") == "country"
+    assert norm("Phone Device Type*") == "phone device type"
+
+
+def test_address_labels_with_trailing_colon_map_from_profile():
+    p = _profile()
+    assert resolve("Address Line 1:*", p, CTX).key == "address_line1"
+    assert resolve("Address Line 1:*", p, CTX).text == "46 W 86th St"
+    assert resolve("City:*", p, CTX).key == "city"
+    assert resolve("City:*", p, CTX).text == "New York"
+
+
+def test_authorized_without_sponsorship_is_yes_not_need_sponsorship():
+    p = _profile()
+    want = resolve(WEST_MONROE_AUTH, p, CTX)
+    assert want is not None
+    assert want.key == "work_authorized_without_sponsorship"
+    assert want.polarity is True
+    assert want.text == "Yes"
+    assert choose(["Yes", "No"], want) == ["Yes"]
+    from apply_engine.fields import map_field, profile_value
+
+    assert map_field(WEST_MONROE_AUTH) == "work_authorized_without_sponsorship"
+    assert profile_value(p, "work_authorized_without_sponsorship") == "Yes"
+
+
+def test_authorized_without_sponsorship_is_no_when_sponsorship_needed():
+    p = _profile()
+    p.need_sponsorship = True
+    want = resolve(WEST_MONROE_AUTH, p, CTX)
+    assert want.key == "work_authorized_without_sponsorship"
+    assert want.polarity is False
+    assert choose(["Yes", "No"], want) == ["No"]
+
+
+def test_plain_sponsorship_question_still_maps_to_need_sponsorship():
+    want = resolve("Will you now or in the future require visa sponsorship?", _profile(), CTX)
+    assert want.key == "need_sponsorship"
+    assert want.polarity is False
+    assert choose(["Yes", "No"], want) == ["No"]
+
+
+def test_graduation_window_dec_2027_aug_2028_yes_for_may_2028():
+    q = "Is your graduation date between December 2027 and August 2028?"
+    want = resolve(q, _profile(), CTX)
+    assert want is not None
+    assert want.key == "graduation_window"
+    assert want.polarity is True
+    assert choose(["Yes", "No"], want) == ["Yes"]
+    early = _profile()
+    early.graduation = "May 2027"
+    assert choose(["Yes", "No"], resolve(q, early, CTX)) == ["No"]
+    late = _profile()
+    late.graduation = "December 2028"
+    assert choose(["Yes", "No"], resolve(q, late, CTX)) == ["No"]
+
+
+def test_how_heard_prefers_company_website_over_relish_careers():
+    options = ["Relish Careers", "Company Website", "LinkedIn", "Employee Referral"]
+    assert pick("How did you hear about us?", options) == ["Company Website"]
+    assert pick("How did you hear about this opportunity?",
+                ["Relish Careers", "Company Career Site", "Indeed"]) == ["Company Career Site"]
+    assert pick("How did you hear about this role?",
+                ["Relish Careers", "Career Site"]) == ["Career Site"]
+
+
+def test_eeo_race_multiselect_matches_white():
+    options = [
+        "American Indian or Alaska Native",
+        "Asian",
+        "Black or African American",
+        "Hispanic or Latino",
+        "White",
+        "Two or More Races",
+        "I do not wish to answer",
+    ]
+    assert pick("Please select your race/ethnicity (select all that apply)", options) == ["White"]
+    assert pick("Race", options) == ["White"]
+    # Options leaking into the question text must not steer this onto hispanic_latino.
+    blob = "Voluntary self-identification " + " / ".join(options)
+    want = resolve(blob, _profile(), CTX)
+    assert want.key == "race_ethnicity"
+    assert choose(options, want) == ["White"]
+
+
+def test_phone_device_type_maps_to_mobile():
+    want = resolve("Phone Device Type*", _profile(), CTX)
+    assert want.key == "phone_device_type"
+    assert choose(["Select One", "Mobile", "Landline", "Fax"], want) == ["Mobile"]
+    assert choose(["Select One", "Mobile Phone", "Home"], want) == ["Mobile Phone"]
+
+
+def test_internship_track_radio_maps_from_role_preferences():
+    want = resolve("Which internship track are you applying for?*", _rich_profile(), CTX)
+    assert want is not None
+    assert choose(
+        ["Product Engineering", "ML/AI Infrastructure", "Data Engineering"],
+        want,
+    ) == ["ML/AI Infrastructure"]

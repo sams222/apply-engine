@@ -112,3 +112,17 @@ def test_auth_click_allowed_requires_email_and_consent_on_create():
 def test_emails_match_casefold():
     assert emails_match("Jordan@X.COM", "jordan@x.com")
     assert not emails_match("", "jordan@x.com")
+
+
+def test_sso_email_gate_visible_only_without_email_password_fields():
+    from apply_engine.workday import sso_email_gate_visible
+
+    assert sso_email_gate_visible(
+        email_input_count=0, password_input_count=0, sign_in_with_email_visible=True
+    ) is True
+    assert sso_email_gate_visible(
+        email_input_count=1, password_input_count=0, sign_in_with_email_visible=True
+    ) is False
+    assert sso_email_gate_visible(
+        email_input_count=0, password_input_count=0, sign_in_with_email_visible=False
+    ) is False

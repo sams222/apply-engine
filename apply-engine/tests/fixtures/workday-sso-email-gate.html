@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Sign In | NVIDIA Workday</title>
+</head>
+<body>
+  <header>
+    <span>NVIDIA</span>
+    <a href="/jobs">Search for Jobs</a>
+  </header>
+  <main>
+    <h1>Sign In</h1>
+    <div id="sso-gate">
+      <button type="button" id="google">Sign in with Google</button>
+      <button type="button" id="linkedin">Sign in with LinkedIn</button>
+      <button type="button" id="email-gate">Sign in with email</button>
+    </div>
+    <form id="login" hidden>
+      <label for="email">Email Address <span aria-hidden="true">*</span></label>
+      <input id="email" data-automation-id="email" type="text" />
+      <label for="password">Password <span aria-hidden="true">*</span></label>
+      <input id="password" data-automation-id="password" type="password" />
+      <button type="submit" id="signIn" data-automation-id="signInSubmitButton">Sign In</button>
+    </form>
+  </main>
+  <div id="private-home" hidden>
+    <h2>My Information</h2>
+    <label>First Name <input id="first_name" name="first_name" data-automation-id="legalName--firstName" /></label>
+  </div>
+  <script>
+    document.getElementById("email-gate").addEventListener("click", () => {
+      window.__emailGateClicked = true;
+      document.getElementById("sso-gate").hidden = true;
+      document.getElementById("login").hidden = false;
+    });
+    document.getElementById("login").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const email = document.querySelector('[data-automation-id="email"]').value.trim();
+      const pw = document.querySelector('[data-automation-id="password"]').value;
+      window.__signInClicked = true;
+      if (!email || !pw) {
+        window.__signedIn = false;
+        return false;
+      }
+      window.__signedIn = true;
+      document.getElementById("login").hidden = true;
+      document.querySelector("h1").hidden = true;
+      document.getElementById("private-home").hidden = false;
+      return false;
+    });
+  </script>
+</body>
+</html>

@@ -1295,6 +1295,7 @@ def fill_workday_sticky_fields(
     # because this one was set eleventh instead of first.
     _fill_country_first(page, profile, filled, skipped, notes)
     _fill_phone_number_only(page, profile, filled, skipped)
+    _fill_phone_device_type(page, filled, skipped)
     _fill_state_then_postal(page, profile, filled, skipped, notes)
     _fill_how_heard(page, profile, filled, skipped, notes)
     _fill_previous_employee_no(page, profile, filled, skipped)
@@ -1556,6 +1557,67 @@ def _fill_how_heard(page: Any, profile: Profile, filled: list, skipped: list, no
         return
     filled.append({"label": "How Did You Hear About Us?", "mapped_to": "how_heard",
                    "value": readback, "method": "workday-prompt-readback"})
+
+
+PHONE_DEVICE_AIDS = (
+    "phoneDeviceType",
+    "phone-device-type",
+    "deviceType",
+    "phoneType",
+    "phone-type",
+)
+PHONE_DEVICE_TERMS = ("Mobile Phone", "Mobile", "Cell Phone", "Cellular", "Cell")
+
+
+def _fill_phone_device_type(page: Any, filled: list, skipped: list) -> None:
+    """Required Workday Phone Device Type (Kyndryl) — Mobile, never leave Select One."""
+    control = form_field_control(page, *PHONE_DEVICE_AIDS)
+    if control is None:
+        for aid in PHONE_DEVICE_AIDS:
+            loc = page.locator(f'[data-automation-id="{aid}"]')
+            try:
+                if loc.count() and loc.first.is_visible():
+                    control = loc.first
+                    break
+            except Exception:
+                continue
+    if control is None:
+        for field in _iter_leaf_form_fields(page):
+            try:
+                text = field.inner_text() or ""
+            except Exception:
+                continue
+            if not re.search(r"phone device type|device type", text, re.I):
+                continue
+            widget = _visible_prompt(field)
+            if widget is not None:
+                control = widget
+                break
+    if control is None:
+        return
+    current = choice_readback(control)
+    if readback_committed(current, PHONE_DEVICE_TERMS):
+        filled.append({
+            "label": "Phone Device Type",
+            "mapped_to": "phone_device_type",
+            "value": current,
+            "method": "workday-phone-device",
+        })
+        return
+    readback, options = _commit_listed_choice(page, control, list(PHONE_DEVICE_TERMS))
+    if readback_committed(readback, PHONE_DEVICE_TERMS):
+        filled.append({
+            "label": "Phone Device Type",
+            "mapped_to": "phone_device_type",
+            "value": readback,
+            "method": "workday-phone-device",
+        })
+        return
+    skipped.append({
+        "label": "Phone Device Type*",
+        "reason": f"readback {readback!r} did not match Mobile (options {options[:6]!r})",
+        "readback": readback,
+    })
 
 
 def _fill_phone_number_only(page: Any, profile: Profile, filled: list, skipped: list) -> None:
@@ -2984,6 +3046,12 @@ def application_question_answers(profile: Profile) -> list[tuple[re.Pattern, str
             rules.append((re.compile(pattern, re.I), key, terms))
 
     add(
+        r"(authori[sz]ed|legally (authori[sz]ed|eligible|able|permitted)|eligible to work).{0,120}without.{0,40}(visa )?sponsor|"
+        r"without.{0,40}(visa )?sponsorship.{0,80}(authori[sz]ed|eligible|able|permitted)",
+        "work_authorized_without_sponsorship",
+        _yes_no_terms(bool(profile.work_authorized_us) and profile.need_sponsorship is False),
+    )
+    add(
         r"sponsor|immigration-related employment benefit|\bvisa\b",
         "need_sponsorship",
         _yes_no_terms(profile.need_sponsorship),
@@ -3082,6 +3150,11 @@ def application_question_answers(profile: Profile) -> list[tuple[re.Pattern, str
         r"text message|mobile text|\bsms\b",
         "sms_opt_in",
         ["Opt-in", "Opt in", "Yes"] if sms else ["Opt-out", "Opt out", "I do not", "No"],
+    )
+    add(
+        r"phone device type|device type",
+        "phone_device_type",
+        list(PHONE_DEVICE_TERMS),
     )
     eeo = profile.eeo
     add(r"\bgender\b", "gender", [eeo.gender] if eeo.gender else None)

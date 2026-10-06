@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<body>
+<form id="app">
+  <div class="ashby-application-form-field-entry">
+    <fieldset>
+      <legend class="ashby-application-form-question-title">Which internship track are you applying for?*</legend>
+      <label><input type="radio" name="track" value="product" required> Product Engineering</label>
+      <label><input type="radio" name="track" value="ml"> ML/AI Infrastructure</label>
+      <label><input type="radio" name="track" value="data"> Data Engineering</label>
+    </fieldset>
+  </div>
+  <div class="field-wrapper">
+    <label for="first_name">First Name*</label>
+    <input id="first_name" type="text" required>
+  </div>
+</form>
+<script>
+  const radios = [...document.querySelectorAll('input[name=track]')];
+  const first = document.getElementById('first_name');
+  // Ashby confirm re-fill: typing other fields remounts / unchecks required radios.
+  first.addEventListener('input', () => {
+    radios.forEach(r => { r.checked = false; });
+    window.__trackCleared = true;
+  });
+</script>
+</body>
+</html>
