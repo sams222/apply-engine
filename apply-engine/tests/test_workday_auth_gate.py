@@ -1,5 +1,76 @@
 
-from apply_engine.workday import auth_click_allowed, emails_match, prefer_sign_in
+from apply_engine.workday import (
+    auth_click_allowed,
+    emails_match,
+    is_standalone_sign_in_url,
+    looks_like_standalone_sign_in,
+    prefer_sign_in,
+)
+
+
+def test_prefer_sign_in_blocked_when_verify_visible():
+    assert prefer_sign_in(known=True, verify_password_visible=True, visible_password_count=2) is False
+    assert prefer_sign_in(known=True, verify_password_visible=False, visible_password_count=1) is True
+    assert prefer_sign_in(known=False, verify_password_visible=False, visible_password_count=1) is False
+
+
+def test_prefer_sign_in_standalone_even_when_tenant_unknown():
+    assert prefer_sign_in(
+        known=False,
+        verify_password_visible=False,
+        visible_password_count=1,
+        standalone_sign_in=True,
+    ) is True
+    assert prefer_sign_in(
+        known=True,
+        verify_password_visible=True,
+        visible_password_count=2,
+        standalone_sign_in=True,
+    ) is False
+
+
+def test_standalone_sign_in_url_private_login():
+    assert is_standalone_sign_in_url(
+        "https://expedia.wd108.myworkdayjobs.com/en-US/private/login?redirect=%2Fen-US%2Fprivate"
+    )
+    assert is_standalone_sign_in_url("https://acme.wd1.myworkdayjobs.com/login")
+    assert is_standalone_sign_in_url("https://acme.wd1.myworkdayjobs.com/en-US/signin")
+    assert not is_standalone_sign_in_url(
+        "https://expedia.wd108.myworkdayjobs.com/en-US/careers/job/Seattle/SDE_R1"
+    )
+    assert not is_standalone_sign_in_url("https://acme.wd1.myworkdayjobs.com/careers")
+
+
+def test_looks_like_standalone_sign_in_form_and_create_veto():
+    login = "https://expedia.wd108.myworkdayjobs.com/en-US/private/login"
+    assert looks_like_standalone_sign_in(
+        url=login,
+        heading_sign_in=True,
+        email_visible=True,
+        visible_password_count=1,
+        sign_in_submit_visible=True,
+    )
+    assert looks_like_standalone_sign_in(
+        heading_sign_in=True,
+        email_visible=True,
+        visible_password_count=1,
+        sign_in_submit_visible=True,
+    )
+    assert looks_like_standalone_sign_in(
+        heading_create_account=False,
+        email_visible=True,
+        visible_password_count=1,
+        sign_in_submit_visible=True,
+    )
+    assert not looks_like_standalone_sign_in(
+        heading_create_account=True,
+        email_visible=True,
+        visible_password_count=2,
+        verify_password_visible=True,
+        sign_in_submit_visible=True,
+        create_account_submit_visible=True,
+    )
+    assert not looks_like_standalone_sign_in(url=login)  # URL without widgets/heading is not fillable yet
 
 
 def test_prefer_sign_in_blocked_when_verify_visible():

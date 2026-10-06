@@ -167,6 +167,8 @@ The wizard walks My Information → Experience (resume PDF) → Education → EE
 
 If the wizard stepper shows **Create Account/Sign In** but email/password have not painted (blank shell / late iframe), the engine waits for the widgets, reloads the live Workday page once, then tries the **header** Sign In link. It does not click in-form Sign In while Verify New Password is showing, does not continue the wizard, and strips `workday-auth` filled rows unless My Information is reached.
 
+Standalone Sign In walls (`/login`, `/private/login`, heading **Sign In** with one password and no Verify New Password) are filled whenever they appear — apply entry, mid-wizard redirects, confirm re-open, and post-apply My Applications / private-area bounces — using `profile.email` and `WORKDAY_DEFAULT_PASSWORD`. Selectors prefer `data-automation-id="email"` / `"password"`; honeypots (`beecatcher`, website traps) stay empty. When `workday-accounts.json` already has this tenant email, Sign In is preferred over Create Account.
+
 
 **Limits:** CAPTCHA, email verification, and 2FA still block unattended apply. The engine records a note and parks at `waiting_confirm` instead of guessing. Greenhouse / Ashby / Lever paths are unchanged.
 
@@ -188,7 +190,7 @@ python -m pytest
 - ATS host/HTML heuristics including Workday (`tests/test_ats_detect.py`)
 - Tailor keyword selection from the pool given `tests/fixtures/fake_jd.md` (`tests/test_tailor.py`)
 - Submit guard: fill never clicks Submit; `submit=True` requires `APPLY_ENGINE_CONFIRM=1` (`tests/test_no_submit.py`)
-- Workday: password env required, never stored; wizard fixture does not submit without confirm; blank Create Account/Sign In shell wait/reload/header recovery (`tests/test_workday.py`)
+- Workday: password env required, never stored; wizard fixture does not submit without confirm; blank Create Account/Sign In shell wait/reload/header recovery (`tests/test_workday.py`); standalone `/private/login` Sign In fill leaves the beecatcher empty (`tests/test_workday_standalone_signin.py`)
 
 ## do-not-retry
 
