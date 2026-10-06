@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<body>
+<form id="app">
+  <div class="field-wrapper">
+    <label for="country">Country*</label>
+    <input id="country" role="combobox" aria-autocomplete="list" required>
+    <div id="menu" role="listbox"></div>
+  </div>
+</form>
+<script>
+  const COUNTRIES = ['United States Minor Outlying Islands', 'United States', 'Uruguay', 'Canada'];
+  const input = document.getElementById('country');
+  const menu = document.getElementById('menu');
+  let painted = false;
+  input.addEventListener('click', () => {
+    if (painted) {
+      menu.innerHTML = COUNTRIES.map(c => `<div role="option">${c}</div>`).join('');
+      return;
+    }
+    menu.innerHTML = '';
+    setTimeout(() => {
+      painted = true;
+      menu.innerHTML = COUNTRIES.map(c => `<div role="option">${c}</div>`).join('');
+    }, 1200);
+  });
+  input.addEventListener('input', () => {
+    const q = input.value.toLowerCase();
+    const hits = COUNTRIES.filter(c => c.toLowerCase().includes(q));
+    menu.innerHTML = hits.map(c => `<div role="option">${c}</div>`).join('');
+  });
+  menu.addEventListener('mousedown', (e) => {
+    const opt = e.target.closest('[role=option]');
+    if (!opt) return;
+    e.preventDefault();
+    input.value = opt.textContent.trim();
+    menu.innerHTML = '';
+  });
+</script>
+</body>
+</html>

@@ -60,6 +60,10 @@ VERIFY_PASSWORD_RE = re.compile(r"verify(\s+new)?\s+password", re.I)
 EMAIL_ADDRESS_RE = re.compile(r"email\s*address", re.I)
 CREATE_SIGNIN_STEP_RE = re.compile(r"create\s+account(\s*/\s*sign\s+in)?|\bsign\s+in\b", re.I)
 HEADER_SIGNIN_RE = re.compile(r"^sign\s+in$", re.I)
+SIGN_IN_WITH_EMAIL_RE = re.compile(
+    r"sign\s*in\s*with\s*(your\s+)?e-?mail|continue\s*with\s*e-?mail|use\s*e-?mail",
+    re.I,
+)
 
 # Wait for Workday SPA/iframe widgets after the stepper mounts (Motorola blank shell).
 AUTH_WIDGET_WAIT_MS = 12_000
@@ -1748,13 +1752,16 @@ def _create_signin_step_active(page: Any) -> bool:
 
 
 def _ensure_workday_auth_widgets(page: Any, notes: list) -> bool:
-    """Wait / reload once / header Sign In when the Create Account shell is blank."""
+    """Wait / SSO email / reload once / header Sign In when the Create Account shell is blank."""
     from apply_engine.workday import is_blank_auth_shell, should_reload_blank_auth_shell
 
     if _auth_widgets_ready_anywhere(page):
         return True
     if _my_information_visible_anywhere(page):
         return False
+
+    if _reveal_workday_email_password(page, notes):
+        return True
 
     flags = _blank_auth_shell_flags(page)
     blank = is_blank_auth_shell(
@@ -1806,6 +1813,8 @@ def _ensure_workday_auth_widgets(page: Any, notes: list) -> bool:
         if _wait_auth_widgets(page, AUTH_WIDGET_HEADER_WAIT_MS):
             notes.append("workday_auth: auth widgets appeared after header Sign In")
             return True
+        if _reveal_workday_email_password(page, notes):
+            return True
 
     if not _auth_widgets_ready_anywhere(page):
         notes.append("workday_auth: blank Create Account/Sign In shell refused — no widgets")
@@ -1830,6 +1839,110 @@ def _wait_auth_widgets(page: Any, timeout_ms: int) -> bool:
             pass
         page.wait_for_timeout(200)
     return _auth_widgets_ready_anywhere(page)
+
+
+def _sign_in_with_email_locator(scope: Any) -> Any | None:
+    """NVIDIA-style SSO modal: Google / LinkedIn / Sign in with email, no fields yet."""
+    try:
+        loc = scope.get_by_role("button", name=SIGN_IN_WITH_EMAIL_RE)
+        if loc.count():
+            return loc
+    except Exception:
+        pass
+    try:
+        loc = scope.get_by_role("link", name=SIGN_IN_WITH_EMAIL_RE)
+        if loc.count():
+            return loc
+    except Exception:
+        pass
+    try:
+        loc = scope.locator("button, a, [role=button]").filter(has_text=SIGN_IN_WITH_EMAIL_RE)
+        if loc.count():
+            return loc
+    except Exception:
+        pass
+    return None
+
+
+def _sign_in_with_email_visible(page: Any) -> bool:
+    for scope in _iter_dom_scopes(page):
+        loc = _sign_in_with_email_locator(scope)
+        if loc is None:
+            continue
+        try:
+            for i in range(min(loc.count(), 4)):
+                node = loc.nth(i)
+                if node.is_visible():
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _click_sign_in_with_email(page: Any, notes: list) -> bool:
+    for scope in _iter_dom_scopes(page):
+        loc = _sign_in_with_email_locator(scope)
+        if loc is None:
+            continue
+        try:
+            n = min(loc.count(), 4)
+        except Exception:
+            continue
+        for i in range(n):
+            node = loc.nth(i)
+            try:
+                if not node.is_visible():
+                    continue
+                text = (node.inner_text() or "").strip()[:80]
+            except Exception:
+                text = "Sign in with email"
+            try:
+                guarded_click(
+                    node,
+                    allow_submit=False,
+                    allow_auth=True,
+                    meta={"text": text or "Sign in with email", "role": "button"},
+                )
+                page.wait_for_timeout(600)
+                notes.append(f"workday_auth: clicked Sign in with email ({text!r})")
+                return True
+            except Exception:
+                try:
+                    node.click(timeout=2000)
+                    page.wait_for_timeout(600)
+                    notes.append(f"workday_auth: clicked Sign in with email ({text!r})")
+                    return True
+                except Exception:
+                    continue
+    return False
+
+
+def _reveal_workday_email_password(page: Any, notes: list) -> bool:
+    """If the auth modal is SSO-only, click Sign in with email then wait for fields."""
+    from apply_engine.workday import sso_email_gate_visible
+
+    if _auth_widgets_ready_anywhere(page):
+        return True
+    email_count = 0
+    password_count = 0
+    for scope in _iter_dom_scopes(page):
+        email_count += len(_visible_auth_email_inputs(scope))
+        password_count += len(_visible_password_inputs(scope))
+    if not sso_email_gate_visible(
+        email_input_count=email_count,
+        password_input_count=password_count,
+        sign_in_with_email_visible=_sign_in_with_email_visible(page),
+    ):
+        return False
+    notes.append("workday_auth: SSO gate (Google/LinkedIn/Sign in with email) — expanding email form")
+    if not _click_sign_in_with_email(page, notes):
+        notes.append("workday_auth: Sign in with email control not clickable")
+        return False
+    if _wait_auth_widgets(page, AUTH_WIDGET_WAIT_MS):
+        notes.append("workday_auth: email/password fields appeared after Sign in with email")
+        return True
+    notes.append("workday_auth: Sign in with email clicked but fields did not appear")
+    return False
 
 
 def _my_information_visible(scope: Any) -> bool:
@@ -2163,6 +2276,9 @@ def _clear_workday_login_wall(
         notes.append("workday_auth: Sign In wall — waiting for widgets")
         _wait_auth_widgets(page, AUTH_WIDGET_WAIT_MS)
     if not _auth_widgets_ready_anywhere(page):
+        if _reveal_workday_email_password(page, notes):
+            pass
+    if not _auth_widgets_ready_anywhere(page):
         if on_login_url:
             notes.append("workday_auth: standalone Sign In URL but no email/password widgets")
             return False
@@ -2187,6 +2303,8 @@ def _fill_and_submit_sign_in(page: Any, email: str, password: str, notes: list, 
     from apply_engine.workday import emails_match
 
     _maybe_dismiss(page)
+    if not _auth_widgets_ready_anywhere(page):
+        _reveal_workday_email_password(page, notes)
     root = _auth_scope(page)
     email_locs = _visible_auth_email_inputs(root)
     if not email_locs:

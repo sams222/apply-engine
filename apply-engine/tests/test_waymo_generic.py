@@ -95,6 +95,10 @@ def test_waymo_question_mapping_from_profile():
     # Classic authorized-to-work must NOT flip to sponsorship.
     assert map_field("Are you authorized to work in the United States?") == "work_authorized_us"
     assert map_field("Will you now or in the future require visa sponsorship?") == "need_sponsorship"
+    assert map_field(
+        "Are you legally authorized to work in the US now and in the future "
+        "for any employer without visa sponsorship?"
+    ) == "work_authorized_without_sponsorship"
 
 
 def test_waymo_fixture_fill_sticks(tmp_path, monkeypatch):

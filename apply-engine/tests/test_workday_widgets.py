@@ -222,6 +222,34 @@ def test_walmart_application_questions_map_from_profile():
     assert "Opt-out" in match_application_question(WALMART_QUESTIONS["sms"], profile)[1]
 
 
+def test_authorized_without_sponsorship_not_mapped_as_need_sponsorship():
+    from pathlib import Path
+
+    from apply_engine.profile import load_profile
+    from apply_engine.workday_widgets import match_application_question
+
+    profile = load_profile(Path(__file__).resolve().parents[1] / "examples" / "profile.json")
+    q = (
+        "Are you legally authorized to work in the US now and in the future "
+        "for any employer without visa sponsorship?"
+    )
+    key, terms = match_application_question(q, profile)
+    assert key == "work_authorized_without_sponsorship"
+    assert terms == ["Yes"]
+
+
+def test_phone_device_type_question_maps_to_mobile():
+    from pathlib import Path
+
+    from apply_engine.profile import load_profile
+    from apply_engine.workday_widgets import match_application_question
+
+    profile = load_profile(Path(__file__).resolve().parents[1] / "examples" / "profile.json")
+    key, terms = match_application_question("Phone Device Type *", profile)
+    assert key == "phone_device_type"
+    assert "Mobile" in terms or "Mobile Phone" in terms
+
+
 def test_fill_application_questions_on_selects():
     import pytest
     from pathlib import Path
@@ -849,3 +877,41 @@ def test_date_segment_calls_react_onchange():
         raise
     assert changed == "06"
     assert blurred == "06"
+
+
+def test_phone_device_type_selects_mobile():
+    import pytest
+    from playwright.sync_api import sync_playwright
+
+    from apply_engine.workday_widgets import _fill_phone_device_type
+
+    pytest.importorskip("playwright")
+    html = """
+    <div data-automation-id="formField-phoneDeviceType">
+      Phone Device Type *
+      <select id="device">
+        <option>Select One</option>
+        <option>Mobile</option>
+        <option>Landline</option>
+        <option>Fax</option>
+      </select>
+    </div>
+    """
+    filled: list = []
+    skipped: list = []
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+            _fill_phone_device_type(page, filled, skipped)
+            shown = page.locator("#device").locator("option:checked").inner_text()
+            browser.close()
+    except Exception as extra:
+        if "Executable doesn't exist" in str(extra):
+            pytest.skip(f"chromium not installed: {extra}")
+        raise
+    assert shown == "Mobile"
+    assert not skipped
+    assert filled and filled[0]["mapped_to"] == "phone_device_type"
+    assert filled[0]["value"] == "Mobile"

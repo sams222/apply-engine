@@ -124,7 +124,36 @@ def test_clear_login_wall_is_noop_on_create_account():
             assert not any("standalone Sign In" in n for n in notes)
             assert page.locator("#email").input_value() == ""
             browser.close()
-    except Exception as exc:
-        if "Executable doesn't exist" in str(exc):
-            pytest.skip(f"chromium not installed: {exc}")
+    except Exception as extra:
+        if "Executable doesn't exist" in str(extra):
+            pytest.skip(f"chromium not installed: {extra}")
+        raise
+
+
+def test_playwright_clicks_sign_in_with_email_then_fills_fields():
+    pytest.importorskip("playwright")
+    from playwright.sync_api import sync_playwright
+
+    from apply_engine.fill import _fill_and_submit_sign_in, _sign_in_with_email_visible
+
+    email = "jordan.avery@example.org"
+    html = (ROOT / "tests" / "fixtures" / "workday-sso-email-gate.html").read_text(encoding="utf-8")
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+            assert _sign_in_with_email_visible(page)
+            notes: list[str] = []
+            skipped: list[dict] = []
+            ok = _fill_and_submit_sign_in(page, email, TEST_PASSWORD, notes, skipped)
+            assert ok, (notes, skipped)
+            assert page.evaluate("() => window.__emailGateClicked") is True
+            assert page.evaluate("() => window.__signInClicked") is True
+            assert page.evaluate("() => window.__signedIn") is True
+            assert any("Sign in with email" in n for n in notes)
+            browser.close()
+    except Exception as extra:
+        if "Executable doesn't exist" in str(extra):
+            pytest.skip(f"chromium not installed: {extra}")
         raise

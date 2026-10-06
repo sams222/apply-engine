@@ -1,4 +1,5 @@
 from datetime import date
+import json
 
 from apply_engine import fingerprint, gate
 from apply_engine.cli import _answer_drift, _pre_submit_check
@@ -87,6 +88,25 @@ def test_confirm_refill_that_changed_an_answer_is_stopped(tmp_path):
     assert _answer_drift(item, fresh)
     assert _pre_submit_check(item)(fresh)
     assert _pre_submit_check(item)({**item, "extra": {"readback_problems": []}}) == []
+
+
+def test_reviewed_answers_include_required_radio_choices(tmp_path):
+    from apply_engine.cli import _reviewed_answers
+
+    review = tmp_path / "review.json"
+    review.write_text(
+        json.dumps({
+            "filled": [
+                {"label": "Which internship track are you applying for?*",
+                 "value": "ML/AI Infrastructure", "method": "radio"},
+                {"label": "Why Niantic?*", "value": "I build ML infra.", "method": "llm-essay"},
+            ]
+        }),
+        encoding="utf-8",
+    )
+    got = _reviewed_answers(tmp_path)
+    assert got["Which internship track are you applying for?*"] == "ML/AI Infrastructure"
+    assert got["Why Niantic?*"] == "I build ML infra."
 
 
 def test_digest_lists_waiting_items(tmp_path):

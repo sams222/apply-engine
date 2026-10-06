@@ -48,7 +48,9 @@ class Want:
 def norm(text: str) -> str:
     t = (text or "").lower().replace("\u2019", "'").replace("\u2013", "-").replace("\u2014", "-")
     t = re.sub(r"[\u2731*]+", " ", t)
-    return re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\s+", " ", t).strip()
+    # Greenhouse/Workday labels often ship as "Address Line 1:*" / "City:".
+    return t.rstrip(":* ").strip()
 
 
 def _extra(profile: Profile, key: str, default=None):
@@ -211,12 +213,42 @@ def _pick_locations(profile: Profile, rank: int = 1) -> Callable[[list[str]], li
     return pick
 
 
+_HOW_HEARD_BOARD_RE = re.compile(
+    r"relish|linkedin|indeed|glassdoor|handshake|ziprecruiter|monster|referral|recruiter"
+)
+_HOW_HEARD_COMPANY_RE = re.compile(
+    r"company (career site|careers?( page| site| website)?|website|site)|"
+    r"corporate (web)?site|career site|careers (page|website|site)|employer website"
+)
+
+
+def _how_heard_score(option: str) -> int:
+    """Higher is better. Company Website / Career Site beat Relish Careers."""
+    low = norm(option)
+    if _HOW_HEARD_BOARD_RE.search(low):
+        return 0
+    if re.search(r"company website|company career site|^career site$|^careers page$", low):
+        return 4
+    if _HOW_HEARD_COMPANY_RE.search(low):
+        return 3
+    if re.search(r"\bwebsite\b", low):
+        return 2
+    if re.search(r"career", low):
+        return 1
+    if re.search(r"^other\b", low):
+        return 0
+    return -1
+
+
 def _pick_how_heard(options: list[str]) -> list[str]:
-    for pat in (r"career|company (web)?site|job site|corporate site", r"\bwebsite\b", r"^other\b"):
-        hits = [o for o in options if re.search(pat, norm(o))]
-        if hits:
-            return hits[:1]
-    return []
+    ranked = sorted(options, key=lambda o: -_how_heard_score(o))
+    if ranked and _how_heard_score(ranked[0]) > 0:
+        return [ranked[0]]
+    boards = [o for o in options if _HOW_HEARD_BOARD_RE.search(norm(o)) and "career" in norm(o)]
+    if boards:
+        return boards[:1]
+    others = [o for o in options if re.search(r"^other\b", norm(o))]
+    return others[:1]
 
 
 # --- matching --------------------------------------------------------------
@@ -352,6 +384,9 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
     add(r"^(signature|electronic signature|e-?signature|sign here|your signature)$",
         lambda q, p, c: Want(key="signature", text=p.full_name))
     add(r"e-?mail", lambda q, p, c: Want(key="email", text=p.email))
+    add(r"phone device type|device type",
+        lambda q, p, c: Want(key="phone_device_type", text="Mobile",
+                             terms=["Mobile Phone", "Mobile", "Cell Phone", "Cellular", "Cell"]))
     add(r"^(phone|mobile|cell|telephone)|phone number", lambda q, p, c: Want(key="phone", text=p.phone))
     add(r"^country$|^country of residence|^phone country|^country\b.{0,20}\b(code|residence)?$|which country (do|are) you (live|reside|located)",
         lambda q, p, c: Want(key="country", text="United States",
@@ -386,8 +421,14 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
     add(r"twitter|x\.com|instagram|facebook profile|dribbble|behance|stack ?overflow|kaggle|google scholar",
         lambda q, p, c: Want(key="other_link", leave_blank=True))
 
-    # Legal / eligibility (sponsorship before authorization: "authorization" appears in both,
-    # except "are you authorized ... (e.g. you have a visa)" which never asks about needing one)
+    # Legal / eligibility. "Authorized … without visa sponsorship" is NOT
+    # need_sponsorship: that wording asks whether the candidate can already
+    # work for any employer without a visa. Answer Yes when authorized AND
+    # need_sponsorship is False. Must run before the sponsorship rule, which
+    # would otherwise match the word "sponsor" and answer No.
+    add(r"(authori[sz]ed|legally (authori[sz]ed|eligible|able|permitted)|eligible to work).{0,120}without.{0,40}(visa )?sponsor|"
+        r"without.{0,40}(visa )?sponsorship.{0,80}(authori[sz]ed|eligible|able|permitted)",
+        lambda q, p, c: _authorized_without_sponsorship_want(p))
     add(r"^(?!.*(sponsor|requir|need|h-?1b|\bopt\b|\bcpt\b)).*(authori[sz]ed to work|legally (authori[sz]ed|eligible|able|permitted) to work)",
         lambda q, p, c: _yn("work_authorized_us", p.work_authorized_us))
     add(r"sponsor|visa|h-?1b|\bopt\b|\bcpt\b|immigration (support|status)|require.{0,40}(work )?authori[sz]ation|employment authori[sz]ation.{0,30}(need|require)",
@@ -481,7 +522,10 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
     add(r"time ?zone", lambda q, p, c: Want(key="timezone", text="Eastern Time (ET)",
                                              terms=["Eastern", "EST", "ET", "America/New_York"]) if norm(p.state) in {"ny", "new york"} else None)
 
-    # Education
+    # Education. Window questions ("between December 2027 and August 2028")
+    # must answer Yes/No, not type the graduation month.
+    add(r"graduat.{0,40}between|between .{0,40}graduat",
+        lambda q, p, c: _grad_window_want(p, q))
     add(r"(expected )?graduation (date|year|month|term)|when (will|do) you (expect to )?graduate|expected (grad|completion)|grad(uation)? (date|year)|class of",
         lambda q, p, c: _graduation_want(p, q))
     add(r"\bgpa\b|grade point", lambda q, p, c: Want(key="gpa", text=p.gpa, terms=_gpa_terms(p.gpa)) if p.gpa else None)
@@ -525,7 +569,7 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
         lambda q, p, c: Want(key="current_title", text=(current_role(c.pool).role if current_role(c.pool) else "Student")))
     add(r"(programming|scripting|coding|software) languages?|languages?.{0,30}(experience|familiar|comfortable|worked with)|tech(nical)? stack|technologies (do you|are you)",
         lambda q, p, c: _tech_want(p, c))
-    add(r"(most|first|second|third|top) (choice|preference)|second choice|third choice|most interested in|(which|what) (area|team|track|opportunit|role|domain|focus)|(type|kind) of (engineering |software )?(role|team|work|position)",
+    add(r"(most|first|second|third|top) (choice|preference)|second choice|third choice|most interested in|(which|what).{0,40}(area|team|track|opportunit|role|domain|focus)|(type|kind) of (engineering |software )?(role|team|work|position)",
         lambda q, p, c: _ranked_pref_want(p, q, "role_preferences"))
     add(r"(most )?important factors|what (matters|is (most )?important) to you|what do you (value|look for) (most )?in",
         lambda q, p, c: _ranked_pref_want(p, q, "internship_priorities", multi=True))
@@ -550,8 +594,7 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
                              polarity=False if re.search(r"lgbt", q) else None)
         if _extra(p, "sexual_orientation") else None)
     add(r"hispanic|latin[oax]",
-        lambda q, p, c: _yn("hispanic_latino", _bool(p, "hispanic_latino"), "Not Hispanic or Latino", "No, not Hispanic or Latino")
-        if not re.search(r"\brace\b", q) else _race_want(p))
+        lambda q, p, c: _hispanic_or_race_want(q, p))
     add(r"\brace\b|ethnicity|ethnic (group|background)", lambda q, p, c: _race_want(p))
     add(r"\bgender\b|\bsex\b", lambda q, p, c: Want(key="gender", text=p.eeo.gender, terms=_gender_terms(p.eeo.gender)) if p.eeo.gender else None)
     add(r"veteran|military service|armed forces", lambda q, p, c: _veteran_want(p))
@@ -620,6 +663,48 @@ def _gender_terms(gender: str) -> list[str]:
     return [gender]
 
 
+def _authorized_without_sponsorship_want(p: Profile) -> Want | None:
+    """Yes only when already US-authorized and no visa sponsorship is needed."""
+    if p.work_authorized_us is True and p.need_sponsorship is False:
+        return _yn("work_authorized_without_sponsorship", True)
+    if p.work_authorized_us is False or p.need_sponsorship is True:
+        return _yn("work_authorized_without_sponsorship", False)
+    return None
+
+
+def _month_years_in(text: str) -> list[tuple[int, int]]:
+    """Every month-year pair in `text`, in order."""
+    found: list[tuple[int, int]] = []
+    low = norm(text)
+    pat = re.compile(r"\b(" + "|".join(m[:3] for m in MONTHS) + r")[a-z]*\.?\s+(\d{4})\b")
+    for m in pat.finditer(low):
+        month = MONTHS.index(next(x for x in MONTHS if x.startswith(m.group(1)))) + 1
+        found.append((month, int(m.group(2))))
+    return found
+
+
+def _grad_window_want(p: Profile, q: str) -> Want | None:
+    grad = graduation(p)
+    if not grad:
+        return None
+    bounds = _month_years_in(q)
+    if len(bounds) < 2:
+        return None
+    start, end = bounds[0], bounds[1]
+    gm, gy = grad
+    inside = (start[1], start[0]) <= (gy, gm) <= (end[1], end[0])
+    return _yn("graduation_window", inside)
+
+
+def _hispanic_or_race_want(q: str, p: Profile) -> Want | None:
+    """Hispanic Yes/No, unless this is a race multi-select that lists White/Asian/etc."""
+    if re.search(r"\brace\b|ethnicity|ethnic (group|background)|select all that apply", q):
+        return _race_want(p)
+    if re.search(r"\b(white|asian|african american|american indian|two or more races)\b", q):
+        return _race_want(p)
+    return _yn("hispanic_latino", _bool(p, "hispanic_latino"), "Not Hispanic or Latino", "No, not Hispanic or Latino")
+
+
 def _pronoun_terms(value: str) -> list[str]:
     parts = [s.strip() for s in re.split(r"\s*/\s*", value) if s.strip()]
     if not parts:
@@ -633,16 +718,34 @@ def _orientation_terms(value: str) -> list[str]:
     return [value]
 
 
+def _race_terms_list(race: str) -> list[str]:
+    terms = [race]
+    if norm(race) == "white":
+        terms += ["White (Not Hispanic or Latino)", "White", "Caucasian", "White (United States of America)"]
+    return terms
+
+
+def _pick_race(profile: Profile) -> Callable[[list[str]], list[str]]:
+    needles = [norm(t) for t in _race_terms_list(profile.eeo.race_ethnicity) if t]
+
+    def pick(options: list[str]) -> list[str]:
+        exact = [o for o in options if norm(o) in needles]
+        if exact:
+            return exact[:1]
+        hits = [o for o in options if any(n and phrase_in(n, norm(o)) for n in needles)]
+        return [min(hits, key=len)] if hits else []
+
+    return pick
+
+
 def _race_want(p: Profile) -> Want | None:
     race = p.eeo.race_ethnicity
     if not race:
         return None
-    terms = [race]
-    if norm(race) == "white":
-        terms += ["White (Not Hispanic or Latino)", "White", "Caucasian", "White (United States of America)"]
-        if _bool(p, "hispanic_latino") is False:
-            terms.insert(0, "White (Not Hispanic or Latino)")
-    return Want(key="race_ethnicity", text=race, terms=terms)
+    terms = _race_terms_list(race)
+    if norm(race) == "white" and _bool(p, "hispanic_latino") is False:
+        terms.insert(0, "White (Not Hispanic or Latino)")
+    return Want(key="race_ethnicity", text=race, terms=terms, pick=_pick_race(p))
 
 
 def _veteran_want(p: Profile) -> Want | None:
