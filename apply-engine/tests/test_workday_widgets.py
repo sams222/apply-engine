@@ -238,6 +238,56 @@ def test_authorized_without_sponsorship_not_mapped_as_need_sponsorship():
     assert terms == ["Yes"]
 
 
+NVIDIA_WORK_PERMIT = (
+    "Will you require employer support to obtain or maintain authorization "
+    "to work in that country? e.g. (work permit)"
+)
+
+
+def test_nvidia_employer_support_work_permit_maps_to_need_sponsorship():
+    from pathlib import Path
+
+    from apply_engine.profile import load_profile
+    from apply_engine.workday_widgets import match_application_question
+
+    profile = load_profile(Path(__file__).resolve().parents[1] / "examples" / "profile.json")
+    assert profile.need_sponsorship is False
+    for q in (
+        NVIDIA_WORK_PERMIT,
+        "Will you require employer support to obtain or maintain authorization to work in that country?",
+        "Will you require a work permit for this role?",
+    ):
+        key, terms = match_application_question(q, profile)
+        assert key == "need_sponsorship", q
+        assert terms == ["No"], q
+
+    profile.need_sponsorship = True
+    key, terms = match_application_question(NVIDIA_WORK_PERMIT, profile)
+    assert key == "need_sponsorship"
+    assert terms == ["Yes"]
+
+
+def test_employer_support_does_not_swallow_authorized_without_sponsorship():
+    """'any employer without visa sponsorship' still wins over employer-support matching."""
+    from pathlib import Path
+
+    from apply_engine.profile import load_profile
+    from apply_engine.workday_widgets import match_application_question
+
+    profile = load_profile(Path(__file__).resolve().parents[1] / "examples" / "profile.json")
+    q = (
+        "Are you legally authorized to work in the US now and in the future "
+        "for any employer without visa sponsorship?"
+    )
+    key, terms = match_application_question(q, profile)
+    assert key == "work_authorized_without_sponsorship"
+    assert terms == ["Yes"]
+    profile.need_sponsorship = True
+    key, terms = match_application_question(q, profile)
+    assert key == "work_authorized_without_sponsorship"
+    assert terms == ["No"]
+
+
 def test_phone_device_type_question_maps_to_mobile():
     from pathlib import Path
 

@@ -33,7 +33,7 @@ FIELD_ALIASES: list[tuple[str, tuple[str, ...]]] = [
     ("full_name", ("full name", "first and last name", "first & last name", "legal name", "your name", "candidate name")),
     # Do NOT use bare "work authorization" — Waymo "Do you require work authorization?" means sponsorship.
     ("work_authorized_us", ("authorized to work", "legally authorized", "eligible to work", "right to work", "work authorized")),
-    ("need_sponsorship", ("require work authorization", "require sponsorship", "visa sponsorship", "need sponsorship", "h1b", "h-1b", "need visa")),
+    ("need_sponsorship", ("require work authorization", "require sponsorship", "visa sponsorship", "need sponsorship", "h1b", "h-1b", "need visa", "employer support", "work permit")),
     # Not bare "not applicable": Workday EEO dropdowns show that as their current value.
     ("sponsorship_type", ("work authorization sponsorship",)),
     ("how_heard", ("how did you hear", "how did you hear about", "how heard")),
@@ -230,18 +230,24 @@ def _map_special_question(label_norm: str, *, placeholder: str = "") -> str | No
     # Authorized-without-sponsorship (West Monroe / Greenhouse) is not need_sponsorship.
     if (
         "without" in label_norm
-        and "sponsor" in label_norm
+        and any(t in label_norm for t in ("sponsor", "work permit", "employer support"))
         and any(t in label_norm for t in ("authori", "eligible", "able to work", "permitted"))
     ):
         return "work_authorized_without_sponsorship"
 
-    # Sponsorship vs work-authorized (Waymo wording).
-    if "require work authorization" in label_norm or (
-        "work authorization" in label_norm and "sponsorship" in label_norm
+    # Sponsorship vs work-authorized (Waymo wording). NVIDIA asks about
+    # requiring employer support / a work permit — same polarity as visa sponsorship.
+    if (
+        "employer support" in label_norm
+        or "work permit" in label_norm
+        or "require work authorization" in label_norm
+        or (
+            "work authorization" in label_norm and "sponsorship" in label_norm
+        )
     ):
         if "what kind" in label_norm or "not applicable" in label_norm:
             return "sponsorship_type"
-        if "require" in label_norm:
+        if "require" in label_norm or "employer support" in label_norm or "work permit" in label_norm:
             return "need_sponsorship"
 
     if "how did you hear" in label_norm:

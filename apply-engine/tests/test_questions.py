@@ -268,6 +268,33 @@ def test_plain_sponsorship_question_still_maps_to_need_sponsorship():
     assert choose(["Yes", "No"], want) == ["No"]
 
 
+NVIDIA_WORK_PERMIT = (
+    "Will you require employer support to obtain or maintain authorization "
+    "to work in that country? e.g. (work permit)"
+)
+
+
+def test_employer_support_work_permit_maps_to_need_sponsorship():
+    p = _profile()
+    want = resolve(NVIDIA_WORK_PERMIT, p, CTX)
+    assert want is not None
+    assert want.key == "need_sponsorship"
+    assert want.polarity is False
+    assert want.text == "No"
+    assert choose(["Yes", "No"], want) == ["No"]
+    from apply_engine.fields import map_field, profile_value
+
+    assert map_field(NVIDIA_WORK_PERMIT) == "need_sponsorship"
+    assert profile_value(p, "need_sponsorship") == "No"
+
+    p.need_sponsorship = True
+    want = resolve(NVIDIA_WORK_PERMIT, p, CTX)
+    assert want.key == "need_sponsorship"
+    assert want.polarity is True
+    assert choose(["Yes", "No"], want) == ["Yes"]
+    assert profile_value(p, "need_sponsorship") == "Yes"
+
+
 def test_graduation_window_dec_2027_aug_2028_yes_for_may_2028():
     q = "Is your graduation date between December 2027 and August 2028?"
     want = resolve(q, _profile(), CTX)
