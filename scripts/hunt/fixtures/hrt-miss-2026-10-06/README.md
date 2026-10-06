@@ -1,0 +1,1 @@
+Synthetic reconstruction of the 2026-10-06 Jobright silent drop for Hudson River Trading Algorithm Development Intern. Public job titles and Greenhouse/Jobright URLs only — not a dump of private hunt output, ledgers, or profile data.
