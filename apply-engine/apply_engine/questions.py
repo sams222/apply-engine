@@ -426,12 +426,12 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
     # work for any employer without a visa. Answer Yes when authorized AND
     # need_sponsorship is False. Must run before the sponsorship rule, which
     # would otherwise match the word "sponsor" and answer No.
-    add(r"(authori[sz]ed|legally (authori[sz]ed|eligible|able|permitted)|eligible to work).{0,120}without.{0,40}(visa )?sponsor|"
-        r"without.{0,40}(visa )?sponsorship.{0,80}(authori[sz]ed|eligible|able|permitted)",
+    add(r"(authori[sz]ed|legally (authori[sz]ed|eligible|able|permitted)|eligible to work).{0,120}without.{0,40}((visa )?sponsor|work permit|employer support)|"
+        r"without.{0,40}((visa )?sponsorship|work permit|employer support).{0,80}(authori[sz]ed|eligible|able|permitted)",
         lambda q, p, c: _authorized_without_sponsorship_want(p))
-    add(r"^(?!.*(sponsor|requir|need|h-?1b|\bopt\b|\bcpt\b)).*(authori[sz]ed to work|legally (authori[sz]ed|eligible|able|permitted) to work)",
+    add(r"^(?!.*(sponsor|requir|need|h-?1b|\bopt\b|\bcpt\b|employer support|work permit)).*(authori[sz]ed to work|legally (authori[sz]ed|eligible|able|permitted) to work)",
         lambda q, p, c: _yn("work_authorized_us", p.work_authorized_us))
-    add(r"sponsor|visa|h-?1b|\bopt\b|\bcpt\b|immigration (support|status)|require.{0,40}(work )?authori[sz]ation|employment authori[sz]ation.{0,30}(need|require)",
+    add(r"sponsor|visa|h-?1b|\bopt\b|\bcpt\b|immigration (support|status)|require.{0,40}(work )?authori[sz]ation|employment authori[sz]ation.{0,30}(need|require)|employer support|work permit",
         lambda q, p, c: _yn("need_sponsorship", p.need_sponsorship, "None", "Not applicable", "N/A", "I do not require", "No, I do not"))
     add(r"authori[sz]ed to work|legally (authori[sz]ed|eligible|able|permitted)|eligible to work|right to work|work (lawfully|legally)|lawfully (work|employed)|permitted to work",
         lambda q, p, c: _yn("work_authorized_us", p.work_authorized_us))

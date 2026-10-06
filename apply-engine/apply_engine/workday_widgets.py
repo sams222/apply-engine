@@ -3035,7 +3035,9 @@ def application_question_answers(profile: Profile) -> list[tuple[re.Pattern, str
     """Question-text rules for Workday Application Questions.
 
     Sponsorship is listed before work-authorization so "require sponsorship
-    for an immigration-related employment benefit" is not answered as work auth.
+    for an immigration-related employment benefit" / "employer support" /
+    "work permit" is not answered as work auth. Authorized-without-sponsorship
+    is listed before sponsorship so West Monroe polarity stays Yes.
     Age terms are 18+ phrases only — never a bare "18", which is also inside
     "Under 18".
     """
@@ -3046,13 +3048,17 @@ def application_question_answers(profile: Profile) -> list[tuple[re.Pattern, str
             rules.append((re.compile(pattern, re.I), key, terms))
 
     add(
-        r"(authori[sz]ed|legally (authori[sz]ed|eligible|able|permitted)|eligible to work).{0,120}without.{0,40}(visa )?sponsor|"
-        r"without.{0,40}(visa )?sponsorship.{0,80}(authori[sz]ed|eligible|able|permitted)",
+        r"(authori[sz]ed|legally (authori[sz]ed|eligible|able|permitted)|eligible to work).{0,120}without.{0,40}((visa )?sponsor|work permit|employer support)|"
+        r"without.{0,40}((visa )?sponsorship|work permit|employer support).{0,80}(authori[sz]ed|eligible|able|permitted)",
         "work_authorized_without_sponsorship",
         _yes_no_terms(bool(profile.work_authorized_us) and profile.need_sponsorship is False),
     )
+    # NVIDIA: "require employer support … authorization to work … (work permit)".
+    # Keep after the without-sponsorship rule so "authorized … without visa
+    # sponsorship" is not answered as need_sponsorship.
     add(
-        r"sponsor|immigration-related employment benefit|\bvisa\b",
+        r"sponsor|immigration-related employment benefit|\bvisa\b|"
+        r"employer support|work permit",
         "need_sponsorship",
         _yes_no_terms(profile.need_sponsorship),
     )
