@@ -10,6 +10,7 @@ from apply_engine.answers import answer_open_ended, looks_open_ended
 from apply_engine.detect import ATS_ASHBY, ATS_GREENHOUSE, ATS_LEVER, ATS_WORKDAY, detect_ats
 from apply_engine.fields import (
     profile_url_forms,
+    file_input_kind,
     is_honeypot,
     FIELD_ALIASES,
     is_noise_field,
@@ -17,6 +18,7 @@ from apply_engine.fields import (
     is_url_profile_key,
     map_field,
     pick_select_option,
+    profile_transcript_path,
     profile_value,
     select_readback_matches,
     url_readback_matches,
@@ -51,7 +53,9 @@ REACT_SET_VALUE = """(el, value) => {
 }"""
 
 CONSENT_RE = re.compile(
-    r"yes,?\s+i have read and consent to the terms( and conditions)?",
+    r"yes,?\s+i have read and consent to the terms( and conditions)?|"
+    r"i understand this privacy statement|"
+    r"i (have read and )?(understand|agree|acknowledge|accept)( to)? (the |this )?(privacy|terms|data privacy)",
     re.I,
 )
 
@@ -74,6 +78,21 @@ AUTH_WIDGET_HEADER_WAIT_MS = 8_000
 WIZARD_SURFACE_WAIT_MS = 8_000
 # After submitting standalone Sign In, wait this long to leave /login.
 SIGN_IN_REDIRECT_WAIT_MS = 8_000
+
+_ENTRY_SKIP_LABELS = {"workday_entry", "workday_auth"}
+
+
+def review_status(*, submit_clicked: bool, notes: list | None, skipped: list | None) -> str:
+    """waiting_confirm only when the fill actually reached a reviewable application."""
+    if submit_clicked:
+        return "submitted"
+    if any("needs_user" in str(n or "") for n in notes or []):
+        return "needs_user"
+    for raw in skipped or []:
+        label = str(raw.get("label") if isinstance(raw, dict) else raw) or ""
+        if label in _ENTRY_SKIP_LABELS:
+            return "needs_user"
+    return "waiting_confirm"
 
 
 
@@ -230,7 +249,7 @@ def fill_application(
                 )
             elif ats in (ATS_ASHBY, ATS_GREENHOUSE, ATS_LEVER) and not html:
                 if _enter_single_page_application(page, ats, notes):
-                    _upload_resume(page, str(resume_path), filled, skipped, notes)
+                    _upload_resume(page, str(resume_path), filled, skipped, notes, profile=profile)
                     page.wait_for_timeout(2500)
                     fill_form(
                         page,
@@ -328,9 +347,9 @@ def fill_application(
             + ", ".join(sorted({str(p.get("mapped_to")) for p in readback_problems}))
         )
 
-    status = "submitted" if submit_clicked else "waiting_confirm"
-    if status == "waiting_confirm" and any("needs_user" in (n or "") for n in notes):
-        status = "needs_user"
+    status = review_status(submit_clicked=submit_clicked, notes=notes, skipped=skipped)
+    if status == "needs_user" and not any("needs_user" in (n or "") for n in notes):
+        notes.append("needs_user: Workday did not reach a fillable application")
     return ReviewArtifact(
         id=queue_id,
         status=status,
@@ -451,7 +470,42 @@ def _drop_other_resumes(page: Any, resume_path: str, notes: list) -> int:
     return removed
 
 
-def _upload_resume(page: Any, resume_path: str, filled: list, skipped: list, notes: list) -> None:
+def _file_input_required(loc: Any, label: str) -> bool:
+    if (label or "").rstrip().endswith("*") or re.search(r"\brequired\b", label or "", re.I):
+        return True
+    try:
+        if loc.get_attribute("aria-required") == "true":
+            return True
+        if loc.get_attribute("required") is not None:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _upload_file_input(loc: Any, path: str, label: str, mapped_to: str, filled: list, skipped: list) -> bool:
+    try:
+        loc.set_input_files(path, timeout=8000)
+        filled.append({"label": label or mapped_to, "mapped_to": mapped_to, "value": path, "method": "file"})
+        return True
+    except Exception as exc:
+        skipped.append({"label": label or mapped_to, "reason": f"file upload failed: {exc}"[:160]})
+        return False
+
+
+def _skip_required_file(skipped: list, label: str, reason: str) -> None:
+    starred = (label or "file").rstrip("*").strip() or "file"
+    skipped.append({"label": starred + "*", "reason": reason})
+
+
+def _upload_resume(
+    page: Any,
+    resume_path: str,
+    filled: list,
+    skipped: list,
+    notes: list,
+    profile: Profile | None = None,
+) -> None:
     _drop_other_resumes(page, resume_path, notes)
     # Ashby SPA: wait briefly for file inputs (esp. after Apply CTA).
     files = page.locator("input[type=file]")
@@ -474,29 +528,32 @@ def _upload_resume(page: Any, resume_path: str, filled: list, skipped: list, not
 
     # Workday keeps the same file input mounted across wizard steps, so running
     # this pass per step attached the tailored PDF five times on live Walmart.
-    if _resume_already_attached(page, resume_path):
+    resume_done = _resume_already_attached(page, resume_path)
+    if resume_done:
         notes.append("resume already attached — not re-uploading")
-        return
 
-    uploaded = False
+    transcript = profile_transcript_path(profile)
 
-    def _try_upload(loc: Any) -> bool:
-        nonlocal uploaded
+    def _meta(loc: Any) -> tuple[str, str]:
         label = _accessible_name(loc)
-        low = (label or "").lower()
-        if "cover" in low and "resume" not in low and "cv" not in low:
-            skipped.append({"label": label or "cover letter file", "reason": "no tailored cover-letter file"})
-            return False
-        if "transcript" in low:
-            return False
         try:
-            loc.set_input_files(resume_path, timeout=8000)
-            filled.append({"label": label or "resume", "mapped_to": "resume", "value": resume_path, "method": "file"})
-            uploaded = True
+            name = loc.get_attribute("name") or ""
+            element_id = loc.get_attribute("id") or ""
+        except Exception:
+            name, element_id = "", ""
+        return label, file_input_kind(label, name, element_id)
+
+    def _try_resume(loc: Any) -> bool:
+        nonlocal resume_done
+        if resume_done:
             return True
-        except Exception as exc:
-            skipped.append({"label": label or "resume", "reason": f"file upload failed: {exc}"[:160]})
+        label, kind = _meta(loc)
+        if kind != "resume":
             return False
+        if _upload_file_input(loc, resume_path, label or "resume", "resume", filled, skipped):
+            resume_done = True
+            return True
+        return False
 
     preferred = page.locator(
         "#_systemfield_resume, input[name='_systemfield_resume'], input[type=file]#resume, "
@@ -504,16 +561,35 @@ def _upload_resume(page: Any, resume_path: str, filled: list, skipped: list, not
     )
     try:
         for i in range(min(preferred.count(), 2)):
-            if _try_upload(preferred.nth(i)):
+            if _try_resume(preferred.nth(i)):
                 break
     except Exception:
         pass
-    if not uploaded:
+    if not resume_done:
         for i in range(count):
-            if _try_upload(files.nth(i)):
+            if _try_resume(files.nth(i)):
                 break
-    if not uploaded:
+    if not resume_done:
         notes.append("resume upload did not stick")
+
+    for i in range(count):
+        loc = files.nth(i)
+        label, kind = _meta(loc)
+        required = _file_input_required(loc, label)
+        if kind == "resume":
+            continue
+        if kind == "cover_letter":
+            if required:
+                _skip_required_file(skipped, label or "cover letter file", "no tailored cover-letter file")
+            continue
+        if kind == "transcript":
+            if transcript:
+                _upload_file_input(loc, transcript, label or "transcript", "transcript", filled, skipped)
+            elif required:
+                _skip_required_file(skipped, label or "Transcript", "required transcript; no transcript_path on profile")
+            continue
+        if required:
+            _skip_required_file(skipped, label or "file", "required file upload has no profile file")
 
 
 CONTAINS_KEYS = {
@@ -612,7 +688,7 @@ def _fill_standard_fields(
     skip_keys: set[str] | None = None,
 ) -> None:
     skip_keys = skip_keys or set()
-    _upload_resume(page, resume_path, filled, skipped, notes)
+    _upload_resume(page, resume_path, filled, skipped, notes, profile=profile)
     claimed: set[str] = {row["mapped_to"] for row in filled}
 
     for key, aliases in FIELD_ALIASES:
@@ -746,7 +822,7 @@ def _workday_validation_blocked(page: Any) -> bool:
 
 
 def _required_terms_unchecked(page: Any) -> bool:
-    from apply_engine.workday_widgets import TERMS_CONSENT_RE
+    from apply_engine.workday_widgets import TERMS_CONSENT_RE, _checkbox_consent_blob
 
     for scope in _iter_dom_scopes(page):
         boxes = scope.locator("input[type=checkbox]")
@@ -757,13 +833,15 @@ def _required_terms_unchecked(page: Any) -> bool:
         for i in range(count):
             box = boxes.nth(i)
             try:
-                if not box.is_visible() or box.is_checked():
+                if box.is_checked():
                     continue
-                blob = " ".join([
-                    box.get_attribute("aria-label") or "",
-                    box.get_attribute("name") or "",
-                    box.get_attribute("id") or "",
-                ])
+                blob = _checkbox_consent_blob(box)
+                if not TERMS_CONSENT_RE.search(blob):
+                    blob = " ".join([
+                        box.get_attribute("aria-label") or "",
+                        box.get_attribute("name") or "",
+                        box.get_attribute("id") or "",
+                    ])
                 if TERMS_CONSENT_RE.search(blob):
                     return True
             except Exception:
@@ -848,7 +926,14 @@ WORKDAY_BLOCKERS = (
      "Workday rejected the sign-in (wrong password or locked account); reset the password on this tenant"),
     (re.compile(r"page you are looking for doesn.t exist|job (posting )?(is )?no longer available|position has been filled", re.I),
      "posting is closed or removed"),
-    (re.compile(r"verify your (email|account)|verification (email|link)|check your email", re.I),
+    (re.compile(
+        r"verify your (email|account)|verification (email|link)|check your email|"
+        r"activate your (account|email)|email activation|confirm your email|"
+        r"we've sent (you )?a (verification|confirmation|activation)|"
+        r"please (verify|confirm|activate).{0,40}(your )?e-?mail|"
+        r"account (is )?(not yet )?activ",
+        re.I,
+     ),
      "Workday wants email verification for the new account; click the link in the inbox, then re-run"),
 )
 
@@ -1240,10 +1325,12 @@ def _run_workday(
     email = workday_email(profile)
     if not _enter_workday_application(page, url, notes):
         skipped.append({"label": "workday_entry", "reason": "stuck on job listing / Apply CTA"})
+        if not any("needs_user" in (n or "") for n in notes):
+            notes.append("needs_user: Workday entry failed — did not reach auth or application fields")
         return
     _maybe_dismiss(page)
     if not _recover_workday_error(page, notes):
-        notes.append("workday stuck on error page after entry")
+        notes.append("needs_user: workday stuck on error page after entry")
         skipped.append({"label": "workday_entry", "reason": "error page after entry"})
         return
     if _captcha_or_2fa(page):
@@ -1312,6 +1399,12 @@ def _run_workday(
         # One more Sign In attempt if still on auth. An error interstitial is
         # not a sign-in page; _advance already refreshed and recorded needs_user.
         if _on_sign_in_page(page):
+            if any(
+                "not retrying" in (n or "") or "email activation" in (n or "")
+                for n in notes
+            ):
+                _park_before_application_fields(filled, skipped, notes, page)
+                return
             notes.append("workday_auth: still Sign In before MI — retry Sign In fill")
             _clear_workday_login_wall(
                 page,
@@ -1406,6 +1499,12 @@ def _run_workday(
         # final screenshot lands on Review, where nothing is left to verify.
         _capture_step(page, screenshot_path, step_shots, step, notes, step_snapshots)
         if _on_review_page(page):
+            from apply_engine.workday_widgets import _check_terms_consent
+
+            # Self Identify can check the box, then Review remounts it unchecked.
+            _check_terms_consent(page, filled, skipped)
+            if _required_terms_unchecked(page):
+                _check_terms_consent(page, filled, skipped)
             if (
                 not revisited_experience
                 and _review_missing_history(page)
@@ -1588,11 +1687,25 @@ def _workday_auth(
     _maybe_dismiss(page)
 
     # After Create Account, Workday often lands on an empty Sign In page (9372e5).
+    # A tenant that requires email activation will reject that Sign In; retrying
+    # risks locking the new account, so one attempt then needs_user.
     if _on_sign_in_page(page) and not _wait_my_information(page):
+        blocker = _workday_blocker(page)
+        if create_mode and blocker and "email verification" in blocker.lower():
+            notes.append(f"needs_user: {blocker}")
+            skipped.append({"label": "workday_auth", "reason": blocker})
+            return False
         notes.append("workday_auth: landed on Sign In after submit — filling Sign In")
         if not _fill_and_submit_sign_in(page, email, password, notes, skipped):
+            if create_mode:
+                _park_create_then_signin(notes, skipped, page)
             return False
         page.wait_for_timeout(1200)
+        if create_mode and (
+            _on_sign_in_page(page) or _auth_error_visible(page) or _workday_blocker(page)
+        ):
+            _park_create_then_signin(notes, skipped, page)
+            return False
 
     # Create Account against an account that already exists just errors and
     # parks. Every tenant we have applied to before is in this state on the
@@ -1606,9 +1719,28 @@ def _workday_auth(
                 page, email, password, notes, skipped
             ):
                 page.wait_for_timeout(1500)
+            elif _on_sign_in_page(page) or _auth_error_visible(page) or _workday_blocker(page):
+                _park_create_then_signin(notes, skipped, page)
+                return False
 
     notes.append("workday auth submitted (create or sign-in)")
     return True
+
+
+def _park_create_then_signin(notes: list, skipped: list, page: Any) -> None:
+    """Stop after Create Account when the follow-up Sign In is rejected.
+
+    Repeated failed sign-ins after a fresh account risk a lockout, and several
+    tenants require clicking an activation email before the first Sign In.
+    """
+    blocker = _workday_blocker(page)
+    reason = blocker or "sign-in after Create Account rejected or activation required"
+    notes.append(
+        "needs_user: after Create Account, Sign In was rejected — tenant may require "
+        "email activation; not retrying (lockout risk)"
+        + (f" ({blocker})" if blocker else "")
+    )
+    skipped.append({"label": "workday_auth", "reason": reason})
 
 
 # Workday renders auth failures ("account already exists", bad password) here.

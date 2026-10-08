@@ -87,6 +87,7 @@ def pick(question: str, options: list[str]) -> list[str]:
         ("Do you have a disability?", ["Yes, I have a disability", "No, I do not have a disability and have not had one in the past",
                                         "I do not want to answer"], "No, I do not have a disability and have not had one in the past"),
         ("Expected graduation date?", ["May 2027", "Spring 2028", "May 2028"], "May 2028"),
+        ("What is your expected date of graduation?", ["May 2027", "Spring 2028", "May 2028"], "May 2028"),
         ("How many prior internships have you had?", ["0", "1", "2", "3+"], "1"),
         ("Which conference did you attend?", ["RecSys 2026", "I did not attend a conference"], "I did not attend a conference"),
         ("Degree Type", ["Undergraduate/Bachelors", "Master's", "PhD"], "Undergraduate/Bachelors"),
@@ -122,6 +123,9 @@ def test_text_answers():
     assert resolve("Preferred First Name", p, CTX).text == "Jordan"
     assert resolve("Current company", p, CTX).text == "Tech Fellows Program"
     assert resolve("Why do you want to join Figma?*", p, CTX).essay
+    grad = resolve("What is your expected date of graduation?", p, CTX)
+    assert grad is not None and not grad.essay and grad.key == "graduation"
+    assert "2028" in (grad.text or "")
     assert resolve("Portfolio Password or Access Code(s)*", p, CTX).text == "N/A"
     assert resolve("What is your current or previous job title?*", p, CTX).text == "Data Science Fellow"
     duo = resolve("Do you have a Duolingo account? If yes, what is your username?*", p, CTX)

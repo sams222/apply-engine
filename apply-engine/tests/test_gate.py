@@ -60,6 +60,23 @@ def test_flagged_essay_stale_build_changed_profile_and_missing_resume_block(tmp_
         assert needle in found
 
 
+def test_record_submission_preserves_unknown_top_level_keys(tmp_path):
+    paths, item = _setup(tmp_path)
+    ledger = gate.ledger_path(paths)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({
+        "submitted": [{"queue_id": "meta-1", "url": "https://example.com/meta", "keys": ["url:example.com/meta"]}],
+        "items": [{"company": "Figure", "note": "logged by hand"}],
+        "owner": "sam",
+    }), encoding="utf-8")
+    gate.record_submission(paths, {"id": "first-run", "company": "Acme", "job_title": "SWE Intern", "url": URL})
+    raw = json.loads(ledger.read_text(encoding="utf-8"))
+    assert raw["items"] == [{"company": "Figure", "note": "logged by hand"}]
+    assert raw["owner"] == "sam"
+    assert any(r.get("queue_id") == "meta-1" for r in raw["submitted"])
+    assert any(r.get("queue_id") == "first-run" for r in raw["submitted"])
+
+
 def test_second_submission_of_same_posting_is_blocked(tmp_path):
     paths, item = _setup(tmp_path)
     gate.record_submission(paths, {"id": "first-run", "company": "Acme", "job_title": "SWE Intern",

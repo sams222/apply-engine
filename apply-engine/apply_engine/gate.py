@@ -73,12 +73,17 @@ def ledger_path(paths: dict) -> Path:
     return Path(paths["queue_dir"]).parent / "submitted-ledger.json"
 
 
-def load_ledger(paths: dict) -> list[dict[str, Any]]:
+def _ledger_document(paths: dict) -> dict[str, Any]:
+    """Full ledger object. Unknown top-level keys (e.g. a manual `items` list) stay intact."""
     path = ledger_path(paths)
     if not path.exists():
-        return []
+        return {}
     raw = load_json(path)
-    return list(raw.get("submitted") or []) if isinstance(raw, dict) else []
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def load_ledger(paths: dict) -> list[dict[str, Any]]:
+    return list(_ledger_document(paths).get("submitted") or [])
 
 
 def record_submission(paths: dict, item: dict[str, Any]) -> None:
@@ -86,7 +91,8 @@ def record_submission(paths: dict, item: dict[str, Any]) -> None:
 
     path = ledger_path(paths)
     with _locked(path):
-        rows = load_ledger(paths)
+        raw = _ledger_document(paths)
+        rows = list(raw.get("submitted") or [])
         rows.append({
             "queue_id": item.get("id"),
             "company": item.get("company"),
@@ -95,7 +101,8 @@ def record_submission(paths: dict, item: dict[str, Any]) -> None:
             "keys": job_keys(str(item.get("url") or ""), str(item.get("company") or ""), str(item.get("job_title") or "")),
             "submitted_at": now_iso(),
         })
-        dump_json(path, {"submitted": rows})
+        raw["submitted"] = rows
+        dump_json(path, raw)
 
 
 def previous_submission(paths: dict, url: str, company: str = "", title: str = "",
