@@ -22,13 +22,14 @@ from apply_engine.profile import load_profile
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "waymo-generic.html"
 POOL = ROOT / "examples" / "PROJECT_POOL.md"
-def _real_profile() -> Path:
+
+
+def _real_profile() -> Path | None:
     """The real profile, wherever the data tree lives on this box.
 
     Deployment keeps it under /workspace/internship-apps; a checkout keeps
-    internship-apps as a sibling of the package. These tests need the real
-    values (NY / 10001 / sponsorship=no), not the @example.com sample, so they
-    skip rather than pass vacuously when no data tree is present.
+    internship-apps as a sibling of the package. Mapping/fill tests need the
+    real values (NY / 10001 / sponsorship=no), not the @example.com sample.
     """
     candidates = [
         ROOT.parent / "internship-apps" / "autofill" / "profile.json",
@@ -37,10 +38,14 @@ def _real_profile() -> Path:
     for cand in candidates:
         if cand.exists():
             return cand
-    pytest.skip("no internship-apps data tree on this box", allow_module_level=True)
+    return None
 
 
-REAL_PROFILE = _real_profile()
+def _require_real_profile() -> Path:
+    path = _real_profile()
+    if path is None:
+        pytest.skip("no internship-apps data tree on this box")
+    return path
 
 
 def test_detect_waymo_gh_jid_as_greenhouse():
@@ -59,7 +64,7 @@ def test_noise_fields_ignored():
 
 
 def test_waymo_question_mapping_from_profile():
-    profile = load_profile(REAL_PROFILE)
+    profile = load_profile(_require_real_profile())
     assert map_field("Do you require work authorization? (required)") == "need_sponsorship"
     assert profile_value(profile, "need_sponsorship") == "No"
     assert map_field(
@@ -105,6 +110,18 @@ def test_waymo_question_mapping_from_profile():
     ) == "need_sponsorship"
 
 
+def test_how_heard_website_beats_social_media_else_facebook():
+    """Company Website when present; Social Media/Facebook only if no website option."""
+    assert pick_select_option(
+        ["LinkedIn", "Social Media (Facebook, Twitter, etc.)", "Company Website", "Other"],
+        HOW_HEARD_PRIMARY,
+    ) == "Company Website"
+    assert pick_select_option(
+        ["LinkedIn", "Social Media (Facebook, Twitter, etc.)", "Other"],
+        HOW_HEARD_PRIMARY,
+    ) == "Social Media (Facebook, Twitter, etc.)"
+
+
 def test_waymo_fixture_fill_sticks(tmp_path, monkeypatch):
     pytest.importorskip("playwright")
     from apply_engine.fill import fill_application
@@ -115,7 +132,8 @@ def test_waymo_fixture_fill_sticks(tmp_path, monkeypatch):
     from apply_engine.tailor import tailor
 
     monkeypatch.delenv(CONFIRM_ENV, raising=False)
-    profile = load_profile(REAL_PROFILE)
+    real_profile = _require_real_profile()
+    profile = load_profile(real_profile)
     pool = load_pool(POOL)
     job = fetch_job_from_text(
         "https://careers.withwaymo.com/jobs?gh_jid=8193731",
@@ -132,7 +150,7 @@ def test_waymo_fixture_fill_sticks(tmp_path, monkeypatch):
             profile=profile,
             resume=tailored,
             resume_path=pdf,
-            profile_path=str(REAL_PROFILE),
+            profile_path=str(real_profile),
             pool_path=str(POOL),
             queue_id="test-waymo-generic",
             html=html,
@@ -154,9 +172,10 @@ def test_waymo_fixture_fill_sticks(tmp_path, monkeypatch):
 
     assert mapped.get("need_sponsorship") == "No"
     assert "not applicable" in str(mapped.get("sponsorship_type") or "").lower()
-    # Fixture has no Company Website option, so Other is the honest careers-page fallback.
+    # Fixture has no website option (LinkedIn / Social Media / Other). Company
+    # Website wins when present; otherwise Social Media > Facebook, not Other.
     how = str(mapped.get("how_heard") or "").lower()
-    assert "other" in how or "company website" in how or "career" in how, mapped.get("how_heard")
+    assert "social media" in how or "facebook" in how, mapped.get("how_heard")
     assert mapped.get("export_license") == "No"
     assert "never" in str(mapped.get("previous_employee") or "").lower()
     assert "acknowledge" in str(mapped.get("policy_ack") or "").lower()
