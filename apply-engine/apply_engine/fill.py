@@ -80,19 +80,36 @@ WIZARD_SURFACE_WAIT_MS = 8_000
 SIGN_IN_REDIRECT_WAIT_MS = 8_000
 
 _ENTRY_SKIP_LABELS = {"workday_entry", "workday_auth"}
+_BROWSER_SKIP_LABELS = {"greenhouse_entry"}
 
 
 def review_status(*, submit_clicked: bool, notes: list | None, skipped: list | None) -> str:
     """waiting_confirm only when the fill actually reached a reviewable application."""
     if submit_clicked:
         return "submitted"
+    if any("needs_browser" in str(n or "") for n in notes or []):
+        return "needs_browser"
     if any("needs_user" in str(n or "") for n in notes or []):
         return "needs_user"
     for raw in skipped or []:
         label = str(raw.get("label") if isinstance(raw, dict) else raw) or ""
+        if label in _BROWSER_SKIP_LABELS:
+            return "needs_browser"
         if label in _ENTRY_SKIP_LABELS:
             return "needs_user"
     return "waiting_confirm"
+
+
+def greenhouse_http_blocked(status: int, url: str = "", body: str = "") -> bool:
+    """Greenhouse 406 is a box-wide WAF; hand off instead of filling an error page."""
+    if int(status or 0) != 406:
+        return False
+    blob = f"{url or ''} {body or ''}".lower()
+    if "greenhouse" in blob or "job-boards.greenhouse" in blob or "boards-api.greenhouse" in blob:
+        return True
+    from apply_engine.detect import detect_ats
+
+    return detect_ats(url or "") == "greenhouse"
 
 
 
@@ -194,6 +211,8 @@ def fill_application(
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         page.set_default_timeout(timeout_ms)
+        greenhouse_blocked = False
+        embed = None
         try:
             if html:
                 page.set_content(html, wait_until="domcontentloaded")
@@ -203,7 +222,18 @@ def fill_application(
                 embed = _greenhouse_embed_without_page(url)
                 if embed:
                     notes.append(f"greenhouse entry: company page -> {embed}")
-                page.goto(embed or url, wait_until="domcontentloaded")
+                resp = page.goto(embed or url, wait_until="domcontentloaded")
+                status = int(getattr(resp, "status", 0) or 0)
+                body_head = ""
+                try:
+                    body_head = page.content()[:2000]
+                except Exception:
+                    body_head = ""
+                if greenhouse_http_blocked(status, embed or url, body_head):
+                    skipped.append({"label": "greenhouse_entry", "reason": "HTTP 406"})
+                    notes.append("needs_browser: Greenhouse HTTP 406 — hand off to a real browser")
+                    ats = ATS_GREENHOUSE
+                    greenhouse_blocked = True
             ats = detect_ats(url, page.content() if not html else html)
             if ats == ATS_WORKDAY and workday_waf_blocked(page) and should_retry_workday_headed(
                 headed=headed_now, waf=True
@@ -235,7 +265,9 @@ def fill_application(
             page.wait_for_timeout(400)
 
             ashby_ready = True
-            if ats == ATS_WORKDAY and waf_parked:
+            if greenhouse_blocked:
+                pass
+            elif ats == ATS_WORKDAY and waf_parked:
                 pass
             elif ats == ATS_WORKDAY:
                 from apply_engine.workday import require_password, workday_email
@@ -657,8 +689,8 @@ WD_AUTOMATION_IDS = {
 # matches nothing on that tenant, which is why Address Line 1, City, State and
 # Postal Code came back blank on every live run while the fixture passed.
 WD_FORM_FIELD_WRAPPERS = {
-    "first_name": ("legalName--firstName", "legalNameSection--firstName"),
-    "last_name": ("legalName--lastName", "legalNameSection--lastName"),
+    "first_name": ("legalName--firstName", "legalNameSection--firstName", "legalNameSection_firstName"),
+    "last_name": ("legalName--lastName", "legalNameSection--lastName", "legalNameSection_lastName"),
     "address_line1": ("addressLine1",),
     "city": ("city",),
     "state": ("countryRegion",),
@@ -1462,11 +1494,13 @@ def _run_workday(
     if not _advance_to_application_fields(page, notes):
         # One more Sign In attempt if still on auth. An error interstitial is
         # not a sign-in page; _advance already refreshed and recorded needs_user.
+        # Never submit Sign In a second time — lockout risk after an existing-account wall.
         if _on_sign_in_page(page):
-            if any(
+            if _sign_in_already_submitted(notes) or any(
                 "not retrying" in (n or "") or "email activation" in (n or "")
                 for n in notes
             ):
+                notes.append("workday_auth: Sign In already submitted once — not retrying (lockout risk)")
                 _park_before_application_fields(filled, skipped, notes, page)
                 return
             notes.append("workday_auth: still Sign In before MI — retry Sign In fill")
@@ -1548,6 +1582,7 @@ def _run_workday(
                 part
                 for part in (
                     job.description if job else "",
+                    job.company if job else "",
                     job.url if job else "",
                     url,
                     " ".join(
@@ -1558,6 +1593,7 @@ def _run_workday(
                 )
                 if part
             ),
+            company=(job.company if job else "") or "",
         )
         # Evidence of this step *while its fields are still on screen*. The
         # final screenshot lands on Review, where nothing is left to verify.
@@ -1742,6 +1778,15 @@ def _workday_auth(
             notes.append("workday auth submitted (sign-in, known tenant)")
             return True
 
+    if create_mode and _account_already_exists(page):
+        notes.append("workday_auth: account already exists — Sign In once")
+        if _switch_to_sign_in_form(page, notes) or not _verify_password_visible(page):
+            if not _fill_and_submit_sign_in(page, email, password, notes, skipped):
+                return False
+            page.wait_for_timeout(1500)
+            notes.append("workday auth submitted (sign-in, existing account)")
+            return True
+
     clicked = _click_auth_button(root, prefer_sign_in=want_sign_in, create_mode=create_mode)
     if not clicked:
         skipped.append({"label": "workday_auth", "reason": "Create Account/Sign In button not found"})
@@ -1758,6 +1803,10 @@ def _workday_auth(
         if create_mode and blocker and "email verification" in blocker.lower():
             notes.append(f"needs_user: {blocker}")
             skipped.append({"label": "workday_auth", "reason": blocker})
+            return False
+        if _sign_in_already_submitted(notes):
+            notes.append("workday_auth: Sign In already submitted once — not retrying (lockout risk)")
+            _park_create_then_signin(notes, skipped, page)
             return False
         notes.append("workday_auth: landed on Sign In after submit — filling Sign In")
         if not _fill_and_submit_sign_in(page, email, password, notes, skipped):
@@ -1777,7 +1826,10 @@ def _workday_auth(
     # (Walmart: verify-password visible forced create_mode, so Sign In was
     # never preferred). Detect the refusal and switch forms instead.
     if create_mode and not _my_information_visible_anywhere(page):
-        if _auth_error_visible(page):
+        if _sign_in_already_submitted(notes):
+            notes.append("workday auth submitted (sign-in)")
+            return True
+        if _auth_error_visible(page) or _account_already_exists(page):
             notes.append("workday_auth: Create Account refused — switching to Sign In")
             if _switch_to_sign_in_form(page, notes) and _fill_and_submit_sign_in(
                 page, email, password, notes, skipped
@@ -2442,6 +2494,37 @@ def _wait_left_sign_in_page(page: Any, timeout_ms: int = SIGN_IN_REDIRECT_WAIT_M
     )
 
 
+ACCOUNT_EXISTS_RE = re.compile(
+    r"account already exists|already have an account|an account with this email|"
+    r"email (address )?is already (registered|in use)|sign in with (your )?existing",
+    re.I,
+)
+
+
+def _sign_in_already_submitted(notes: list) -> bool:
+    return any("Sign In submitted" in str(n or "") for n in notes)
+
+
+def _account_already_exists(page: Any) -> bool:
+    """True when Workday is refusing Create Account because the email is taken.
+
+    Only error banners count — Create Account always has an 'Already have an
+    account?' link, which is not a refusal.
+    """
+    blobs: list[str] = []
+    for scope in _iter_dom_scopes(page):
+        for sel in AUTH_ERROR_SELECTORS:
+            try:
+                loc = scope.locator(sel)
+                for i in range(min(loc.count(), 5)):
+                    node = loc.nth(i)
+                    if node.is_visible():
+                        blobs.append(node.inner_text() or "")
+            except Exception:
+                continue
+    return bool(ACCOUNT_EXISTS_RE.search(" ".join(blobs)))
+
+
 def _clear_workday_login_wall(
     page: Any,
     *,
@@ -2458,6 +2541,10 @@ def _clear_workday_login_wall(
     Never invents a password; caller passes WORKDAY_DEFAULT_PASSWORD.
     """
     from apply_engine.workday import is_standalone_sign_in_url, known_account_email
+
+    if _sign_in_already_submitted(notes):
+        notes.append("workday_auth: Sign In already submitted once — not retrying (lockout risk)")
+        return (not _on_sign_in_page(page)) or bool(_wait_my_information(page))
 
     try:
         url = page.url or ""
@@ -2702,6 +2789,7 @@ def _click_next(page: Any) -> bool:
     loc = page.locator('[data-automation-id="bottom-navigation-next-button"]')
     try:
         if loc.count() and loc.first.is_visible():
+            _wait_submit_enabled(page, loc.first, timeout_ms=4000)
             # Same click_filter overlay as the auth buttons can sit over Next.
             if _click_through_filter(
                 page,
@@ -2726,6 +2814,7 @@ def _click_next(page: Any) -> bool:
         try:
             if not btn.is_visible():
                 continue
+            _wait_submit_enabled(page, btn, timeout_ms=4000)
             btn.click(timeout=3000)
             return True
         except Exception:
@@ -2741,6 +2830,7 @@ def _click_next(page: Any) -> bool:
             continue
         if is_next_control(text):
             try:
+                _wait_submit_enabled(page, btn, timeout_ms=4000)
                 btn.click(timeout=3000)
                 return True
             except Exception:
@@ -2969,9 +3059,80 @@ def _write_url_locator(page: Any, loc: Any, value: str) -> tuple[bool, str]:
             return False, "fail"
 
 
+_LEGAL_NAME_FIRST_SEL = (
+    '[data-automation-id="legalName--firstName"], '
+    '[data-automation-id="legalNameSection_firstName"], '
+    '[data-automation-id="legalNameSection--firstName"], '
+    'input[name="first_name"]'
+)
+_LEGAL_NAME_LAST_SEL = (
+    '[data-automation-id="legalName--lastName"], '
+    '[data-automation-id="legalNameSection_lastName"], '
+    '[data-automation-id="legalNameSection--lastName"], '
+    'input[name="last_name"]'
+)
+_LEGAL_NAME_FIELDSET_RE = re.compile(r"legal name.*first name.*last name", re.I)
+
+
+def _narrow_legal_name_control(loc: Any, key: str) -> Any | None:
+    """Prefer the First/Last input over a Legal Name fieldset wrapper."""
+    if loc is None:
+        return None
+    if key == "full_name":
+        try:
+            blob = loc.evaluate("el => (el.innerText || el.textContent || '')") or ""
+        except Exception:
+            blob = ""
+        if _LEGAL_NAME_FIELDSET_RE.search(str(blob)):
+            return None
+        return loc
+    if key not in {"first_name", "last_name"}:
+        return loc
+    sel = _LEGAL_NAME_FIRST_SEL if key == "first_name" else _LEGAL_NAME_LAST_SEL
+    try:
+        inner = loc.locator(sel)
+        if inner.count() and inner.first.is_visible():
+            return inner.first
+    except Exception:
+        pass
+    try:
+        tag = (loc.evaluate("el => (el.tagName || '').toLowerCase()") or "").lower()
+        if tag in {"input", "textarea"}:
+            return loc
+    except Exception:
+        pass
+    try:
+        blob = loc.evaluate("el => (el.innerText || el.textContent || '')") or ""
+    except Exception:
+        blob = ""
+    if _LEGAL_NAME_FIELDSET_RE.search(str(blob)):
+        try:
+            page = loc.page
+            scoped = page.locator(sel)
+            if scoped.count() and scoped.first.is_visible():
+                return scoped.first
+        except Exception:
+            return None
+        return None
+    return loc
+
+
 def _find_by_aliases(page: Any, aliases: tuple[str, ...], contains: bool = False, key: str = "") -> Any | None:
     root = _application_form_scope(page)
     url_key = is_url_profile_key(key)
+    if key in {"first_name", "last_name"}:
+        sel = _LEGAL_NAME_FIRST_SEL if key == "first_name" else _LEGAL_NAME_LAST_SEL
+        try:
+            loc = root.locator(sel)
+            for i in range(min(loc.count(), 6)):
+                cand = loc.nth(i)
+                try:
+                    if cand.is_visible():
+                        return cand
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
     def _accept(loc: Any) -> bool:
         if loc is None:
@@ -3021,10 +3182,14 @@ def _find_by_aliases(page: Any, aliases: tuple[str, ...], contains: bool = False
             for i in range(min(n, 8)):
                 cand = loc.nth(i)
                 if _accept(cand):
-                    return cand
+                    narrowed = _narrow_legal_name_control(cand, key)
+                    if narrowed is not None:
+                        return narrowed
         wrapped = _find_in_form_field_wrapper(root, key, _accept)
         if wrapped is not None:
-            return wrapped
+            narrowed = _narrow_legal_name_control(wrapped, key)
+            if narrowed is not None:
+                return narrowed
     if key == "full_name":
         loc = root.locator("#_systemfield_name, input[name='_systemfield_name']")
         try:
@@ -3048,7 +3213,9 @@ def _find_by_aliases(page: Any, aliases: tuple[str, ...], contains: bool = False
         for i in range(min(n, 12)):
             cand = loc.nth(i)
             if _accept(cand):
-                return cand
+                narrowed = _narrow_legal_name_control(cand, key)
+                if narrowed is not None:
+                    return narrowed
         slug = alias.replace(" ", "_")
         loc = root.locator(
             f"input[name='{slug}'], textarea[name='{slug}'], select[name='{slug}'], "
@@ -3061,7 +3228,9 @@ def _find_by_aliases(page: Any, aliases: tuple[str, ...], contains: bool = False
         for i in range(min(n, 8)):
             cand = loc.nth(i)
             if _accept(cand):
-                return cand
+                narrowed = _narrow_legal_name_control(cand, key)
+                if narrowed is not None:
+                    return narrowed
     return None
 
 
@@ -3139,6 +3308,10 @@ def _record_widget_filled(
     from apply_engine.workday_widgets import phone_digits_match, readback_committed, widget_readback
 
     observed = widget_readback(loc)
+    if key in {"first_name", "last_name"} and _LEGAL_NAME_FIELDSET_RE.search(observed or ""):
+        typed = _input_value(loc)
+        if typed:
+            observed = typed
     terms = [t for t in (intended_terms or [intended]) if t]
     stuck = False
     if key == "phone":
@@ -3356,8 +3529,17 @@ def _accessible_name(loc: Any) -> str:
         return str(
             loc.evaluate(
                 """el => {
-                  if (el.labels && el.labels[0]) return el.labels[0].innerText.trim();
-                  return el.getAttribute('aria-label') || el.name || el.id || '';
+                  const wideLegal = (s) => /legal name/i.test(s) && /first name/i.test(s) && /last name/i.test(s);
+                  const auto = el.getAttribute('data-automation-id') || '';
+                  if (/firstName/i.test(auto)) return 'First Name';
+                  if (/lastName/i.test(auto)) return 'Last Name';
+                  if (el.labels && el.labels[0]) {
+                    const t = (el.labels[0].innerText || '').trim();
+                    if (t && !wideLegal(t)) return t;
+                  }
+                  const aria = el.getAttribute('aria-label') || '';
+                  if (aria && !wideLegal(aria)) return aria;
+                  return el.name || el.id || '';
                 }"""
             )
             or ""

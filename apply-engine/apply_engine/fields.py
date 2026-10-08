@@ -719,6 +719,8 @@ def select_readback_matches(observed: str, intended: str, *, key: str = "") -> b
     exp = (intended or "").strip()
     if not obs or not exp:
         return False
+    if re.search(r"\bselect one\b", obs, re.I):
+        return False
     if obs.lower() == exp.lower():
         return True
     if pick_select_option([obs], exp) is not None:

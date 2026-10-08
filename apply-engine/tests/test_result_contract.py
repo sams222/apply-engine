@@ -66,7 +66,7 @@ def test_unexpected_exception_still_emits_result(capsys, monkeypatch):
 
 
 def test_do_not_retry_emits_result_and_exit_3(capsys):
-    rc = cli.main(["apply", "--url", "https://careers.doordash.com/jobs/1"])
+    rc = cli.main(["apply", "--url", "https://job-boards.greenhouse.io/doordashusa/jobs/8171041"])
     payload = _result_line(capsys)
 
     assert rc == 3

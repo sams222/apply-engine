@@ -398,7 +398,7 @@ def readback_committed(widget_text: str, terms: Iterable[str]) -> bool:
     displayed = parse_state_widget_text(widget_text)
     if re.match(r"error\b", displayed.strip(), re.I):
         return False
-    if displayed.strip().lower() in SELECT_ONE:
+    if displayed.strip().lower() in SELECT_ONE or re.search(r"\bselect one\b", displayed, re.I):
         return False
     if not (displayed or "").strip():
         return False
@@ -496,11 +496,24 @@ def widget_readback(locator: Any) -> str:
                   const inMulti = !!el.closest("[data-automation-id='multiSelectContainer']")
                     || !!el.closest("[data-automation-id='multiselectInputContainer']")
                     || !!(el.getAttribute && /selectinput|multiselect/i.test(el.getAttribute('data-uxi-widget-type') || ''));
+                  const wideLegal = (s) => /legal name/i.test(s) && /first name/i.test(s) && /last name/i.test(s);
                   if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && !inMulti) {
                     if (clean(el.value)) return clean(el.value);
                   } else if (!inMulti) {
                     const own = clean(el.innerText || el.textContent || '');
-                    if (own && !/^select one$/i.test(own)) return own;
+                    if (own && wideLegal(own)) {
+                      const aid = (el.getAttribute && el.getAttribute('data-automation-id')) || '';
+                      const wantLast = /lastName/i.test(aid);
+                      const sel = wantLast
+                        ? '[data-automation-id*="lastName" i], input[name="last_name"]'
+                        : '[data-automation-id*="firstName" i], input[name="first_name"]';
+                      const box = el.querySelector(sel) || el;
+                      if (box && (box.tagName === 'INPUT' || box.tagName === 'TEXTAREA') && clean(box.value)) {
+                        return clean(box.value);
+                      }
+                    } else if (own && !/^select one$/i.test(own)) {
+                      return own;
+                    }
                   }
                   // Searchable prompt: the commitment lives in selectedItemList,
                   // on an ancestor field wrapper rather than on the control.
@@ -1292,6 +1305,16 @@ def _settle(page: Any, ms: int = 150) -> None:
         pass
 
 
+def _company_hint(job_title: str, job_text: str, company: str = "") -> str:
+    if (company or "").strip():
+        return company.strip()
+    blob = f"{job_title or ''} {job_text or ''}"
+    host = re.search(r"https?://([^/]+)", blob)
+    if host and ("myworkdayjobs" in host.group(1) or "workdayjobs" in host.group(1) or re.search(r"\.wd\d+\.", host.group(1))):
+        return host.group(1).split(".")[0].replace("-", " ")
+    return ""
+
+
 def fill_workday_sticky_fields(
     page: Any,
     profile: Profile,
@@ -1301,6 +1324,7 @@ def fill_workday_sticky_fields(
     experience: list | None = None,
     job_title: str = "",
     job_text: str = "",
+    company: str = "",
 ) -> None:
     """Section-aware sticky fills. Failures are recorded; never claimed as success."""
     # Country FIRST. Workday derives the address layout, the State option list,
@@ -1312,7 +1336,7 @@ def fill_workday_sticky_fields(
     _fill_phone_number_only(page, profile, filled, skipped)
     _fill_phone_device_type(page, filled, skipped)
     _fill_state_then_postal(page, profile, filled, skipped, notes)
-    _fill_how_heard(page, profile, filled, skipped, notes)
+    _fill_how_heard(page, profile, filled, skipped, notes, company=_company_hint(job_title, job_text, company=company))
     _fill_previous_employee_no(page, profile, filled, skipped)
     if _on_my_experience(page):
         from apply_engine.workday_experience import commit_open_panel, fill_education_panel, fill_work_panels
@@ -1323,7 +1347,9 @@ def fill_workday_sticky_fields(
         # Work filling presses Escape to close its own menus. That key also
         # removes a Field of Study chip, so the major is committed last.
         _fill_degree_and_fos(page, profile, filled, skipped)
-    _fill_application_questions(page, profile, filled, skipped)
+    _fill_application_questions(
+        page, profile, filled, skipped, notes, job_title=job_title, job_text=job_text
+    )
     _fill_question_radios(page, profile, filled, skipped)
     _fill_disability_self_id_block(page, profile, filled, skipped)
     _fill_proposed_start_date(page, job_title, job_text, filled, skipped)
@@ -1531,6 +1557,9 @@ HOW_HEARD_AIDS = (
 
 
 def find_how_heard_control(page: Any) -> Any | None:
+    wrapped = form_field_control(page, *HOW_HEARD_AIDS)
+    if wrapped is not None:
+        return wrapped
     for aid in HOW_HEARD_AIDS:
         loc = page.locator(f'[data-automation-id="{aid}"]')
         try:
@@ -1541,6 +1570,12 @@ def find_how_heard_control(page: Any) -> Any | None:
     # Fall back to the labelled prompt, which Walmart marks required.
     try:
         loc = page.get_by_label("How Did You Hear About Us?", exact=False)
+        if loc.count() and loc.first.is_visible():
+            return loc.first
+    except Exception:
+        pass
+    try:
+        loc = page.get_by_role("button", name=re.compile(r"how did you hear", re.I))
         if loc.count() and loc.first.is_visible():
             return loc.first
     except Exception:
@@ -1612,30 +1647,139 @@ def _visible_how_heard_options(page: Any) -> list[tuple[Any, str]]:
     return out
 
 
-def _how_heard_leaf_score(text: str) -> int:
-    """Leaves under a Corporate Careers Website folder: microsite/.jobs beat named boards."""
+def _how_heard_leaf_score(text: str, company: str = "") -> int:
+    """Leaves: company careers website beats a generic Website; microsite/.jobs still rank high."""
     low = (text or "").strip().lower()
     if re.search(r"microsite|\.jobs\b|jobs microsite", low):
         return 5
     from apply_engine.questions import _how_heard_score
 
-    return _how_heard_score(text)
+    return _how_heard_score(text, company)
 
 
-def _pick_how_heard_option(opts: list[tuple[Any, str]], terms: list[str]) -> tuple[Any, str] | None:
+def _pick_how_heard_option(
+    opts: list[tuple[Any, str]],
+    terms: list[str],
+    company: str = "",
+) -> tuple[Any, str] | None:
     for term in terms:
         low = term.lower()
         for opt, text in opts:
-            if low in text.lower():
+            if low in text.lower() and _how_heard_leaf_score(text, company) > 0:
                 return opt, text
-    ranked = sorted(opts, key=lambda row: -_how_heard_leaf_score(row[1]))
-    if ranked and _how_heard_leaf_score(ranked[0][1]) > 0:
+    ranked = sorted(opts, key=lambda row: -_how_heard_leaf_score(row[1], company))
+    if ranked and _how_heard_leaf_score(ranked[0][1], company) > 0:
         return ranked[0]
     return None
 
 
-def _walk_how_heard_multiselect(page: Any, control: Any, terms: list[str], notes: list) -> list[str]:
-    """Hierarchical Workday multiselect: open, walk a category, click a leaf, verify chip."""
+def _how_heard_list_container(page: Any) -> Any | None:
+    for sel in (
+        '[data-automation-id="activeListContainer"]',
+        '[data-uxi-widget-type="selectlistbox"]',
+        '[role="listbox"]',
+    ):
+        loc = page.locator(sel)
+        try:
+            for i in range(min(loc.count(), 8)):
+                cand = loc.nth(i)
+                if cand.is_visible():
+                    return cand
+        except Exception:
+            continue
+    return None
+
+
+def _scroll_list_step(container: Any) -> bool:
+    """Advance scrollTop. True when the list cannot scroll further."""
+    try:
+        return bool(
+            container.evaluate(
+                """el => {
+                  const before = el.scrollTop;
+                  el.scrollTop = Math.min(el.scrollHeight, el.scrollTop + Math.max(el.clientHeight * 0.85, 80));
+                  return el.scrollTop <= before + 1 || el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+                }"""
+            )
+        )
+    except Exception:
+        return True
+
+
+def _scroll_how_heard_options(page: Any) -> list[tuple[Any, str]]:
+    """Scroll a virtualized listbox until no new option labels appear."""
+    seen: set[str] = set()
+    out: list[tuple[Any, str]] = []
+    container = _how_heard_list_container(page)
+    for _ in range(48):
+        fresh = False
+        for opt, text in _visible_how_heard_options(page):
+            if text not in seen:
+                seen.add(text)
+                out.append((opt, text))
+                fresh = True
+        if not container:
+            break
+        at_end = _scroll_list_step(container)
+        _settle(page, 120)
+        if at_end and not fresh:
+            break
+    return out
+
+
+def _reveal_how_heard_option(page: Any, label: str) -> Any | None:
+    """Scroll a virtualized list until `label` is painted, then return its locator."""
+    if not (label or "").strip():
+        return None
+    pattern = re.compile(r"^\s*" + re.escape(label.strip()) + r"\s*$")
+    container = _how_heard_list_container(page)
+    if container is not None:
+        try:
+            container.evaluate("el => { el.scrollTop = 0; }")
+        except Exception:
+            pass
+        _settle(page, 80)
+    for _ in range(48):
+        loc = page.locator(HOW_HEARD_OPTION_SEL).filter(has_text=pattern)
+        try:
+            n = loc.count()
+        except Exception:
+            n = 0
+        for i in range(min(n, 8)):
+            cand = loc.nth(i)
+            try:
+                if cand.is_visible():
+                    return cand
+            except Exception:
+                continue
+        if container is None:
+            break
+        if _scroll_list_step(container):
+            loc = page.locator(HOW_HEARD_OPTION_SEL).filter(has_text=pattern)
+            try:
+                if loc.count() and loc.first.is_visible():
+                    return loc.first
+            except Exception:
+                pass
+            break
+        _settle(page, 80)
+    loc = page.locator(HOW_HEARD_OPTION_SEL).filter(has_text=pattern)
+    try:
+        if loc.count():
+            return loc.first
+    except Exception:
+        return None
+    return None
+
+
+def _walk_how_heard_multiselect(
+    page: Any,
+    control: Any,
+    terms: list[str],
+    notes: list,
+    company: str = "",
+) -> list[str]:
+    """Hierarchical Workday multiselect: scroll virtualized lists, score every leaf."""
     log: list = []
     forced = [x.strip() for x in os.environ.get("WD_HOW_HEARD_PATH", "").split(">") if x.strip()]
 
@@ -1656,29 +1800,26 @@ def _walk_how_heard_multiselect(page: Any, control: Any, terms: list[str], notes
         control.scroll_into_view_if_needed()
         control.click(timeout=3000)
         _settle(page, 800)
-        top = _visible_how_heard_options(page)
+        top = _scroll_how_heard_options(page) or _visible_how_heard_options(page)
         log.append(("top", [t for _, t in top]))
         if forced:
             for step in forced:
-                o = page.locator(HOW_HEARD_OPTION_SEL).filter(
-                    has_text=re.compile(r"^\s*" + re.escape(step) + r"\s*$")
-                ).first
-                click_opt(o)
-                _settle(page, 800)
+                o = _reveal_how_heard_option(page, step)
+                if o is not None:
+                    click_opt(o)
+                    _settle(page, 800)
                 log.append(("forced", step))
             page.keyboard.press("Escape")
             _settle(page, 300)
             notes.append(f"how_heard multiselect walk: {log}")
             return _multiselect_chips(control)
-        hit = _pick_how_heard_option(top, terms)
-        if hit is None:
-            cats = sorted(top, key=lambda x: 0 if re.search(r"direct|website|career|company|online", x[1], re.I) else 1)
-            for _o, cat in cats:
-                o = page.locator(HOW_HEARD_OPTION_SEL).filter(
-                    has_text=re.compile(r"^\s*" + re.escape(cat) + r"\s*$")
-                ).first
+        hit = _pick_how_heard_option(top, terms, company)
+        best: tuple[str, str, int] | None = None
+        if hit is None or _how_heard_leaf_score(hit[1], company) < 5:
+            for _o, cat in top:
+                o = _reveal_how_heard_option(page, cat)
                 try:
-                    vis = o.is_visible()
+                    vis = bool(o is not None and o.is_visible())
                 except Exception:
                     vis = False
                 if not vis:
@@ -1686,35 +1827,84 @@ def _walk_how_heard_multiselect(page: Any, control: Any, terms: list[str], notes
                     _settle(page, 400)
                     control.click(timeout=3000)
                     _settle(page, 800)
-                if not click_opt(o):
+                    _scroll_how_heard_options(page)
+                    o = _reveal_how_heard_option(page, cat)
+                if o is None or not click_opt(o):
                     log.append((cat, "click failed"))
                     continue
                 _settle(page, 800)
-                kids = _visible_how_heard_options(page)
+                kids = _scroll_how_heard_options(page) or _visible_how_heard_options(page)
                 log.append((cat, [k for _, k in kids]))
-                hit = _pick_how_heard_option(kids, terms)
-                if hit:
+                for _k, leaf in kids:
+                    score = _how_heard_leaf_score(leaf, company)
+                    if best is None or score > best[2]:
+                        best = (cat, leaf, score)
+                leaf_hit = _pick_how_heard_option(kids, terms, company)
+                if leaf_hit and _how_heard_leaf_score(leaf_hit[1], company) >= 5:
+                    o = _reveal_how_heard_option(page, leaf_hit[1])
+                    if o is not None and click_opt(o):
+                        hit = (o, leaf_hit[1])
+                        log.append(("clicked-leaf", leaf_hit[1]))
+                        break
+                    hit = (None, leaf_hit[1])
                     break
+                hit = None
                 back = page.locator("[data-automation-id='backButton'], [aria-label*='Back' i]")
-                if back.count():
-                    back.first.click(timeout=2000)
-                    _settle(page, 600)
+                went_back = False
+                try:
+                    if back.count() and back.first.is_visible():
+                        back.first.click(timeout=2000)
+                        _settle(page, 600)
+                        went_back = True
+                except Exception:
+                    went_back = False
+                if not went_back:
+                    try:
+                        page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+                    _settle(page, 300)
+                    try:
+                        control.click(timeout=3000)
+                    except Exception:
+                        pass
+                    _settle(page, 800)
+            if (hit is None or _how_heard_leaf_score(hit[1], company) < 5) and best and best[2] > 0:
+                hit = (None, best[1])
+                log.append(("best", best))
         if hit:
             o, t = hit
-            click_opt(o)
+            chips_now = _multiselect_chips(control)
+            if chips_now:
+                log.append(("clicked", t))
+            else:
+                if o is None and best:
+                    page.keyboard.press("Escape")
+                    _settle(page, 300)
+                    control.click(timeout=3000)
+                    _settle(page, 600)
+                    cat_loc = _reveal_how_heard_option(page, best[0])
+                    if cat_loc is not None:
+                        click_opt(cat_loc)
+                        _settle(page, 600)
+                        _scroll_how_heard_options(page)
+                o = _reveal_how_heard_option(page, t) or o
+                if o is not None:
+                    click_opt(o)
             _settle(page, 800)
             log.append(("clicked", t))
             if not _multiselect_chips(control):
-                kids = _visible_how_heard_options(page)
+                kids = _scroll_how_heard_options(page) or _visible_how_heard_options(page)
                 kids = [(k, label) for k, label in kids if label.strip().lower() != t.strip().lower()]
-                leaf = _pick_how_heard_option(kids, terms) if kids else None
+                leaf = _pick_how_heard_option(kids, terms, company) if kids else None
                 if leaf:
                     lo, lt = leaf
+                    lo = _reveal_how_heard_option(page, lt) or lo
                     click_opt(lo)
                     _settle(page, 800)
                     log.append(("leaf", lt))
                     o, t = lo, lt
-            if not _multiselect_chips(control):
+            if o is not None and not _multiselect_chips(control):
                 cb = o.locator("input[type=checkbox], [role=checkbox]")
                 if cb.count():
                     cb.first.click(force=True)
@@ -1727,7 +1917,14 @@ def _walk_how_heard_multiselect(page: Any, control: Any, terms: list[str], notes
     return _multiselect_chips(control)
 
 
-def _fill_how_heard(page: Any, profile: Profile, filled: list, skipped: list, notes: list) -> None:
+def _fill_how_heard(
+    page: Any,
+    profile: Profile,
+    filled: list,
+    skipped: list,
+    notes: list,
+    company: str = "",
+) -> None:
     """How Did You Hear About Us? Tenants spell Company Website differently; some use a hierarchical multiselect."""
     terms = _how_heard_terms(profile)
     control = find_how_heard_control(page)
@@ -1739,7 +1936,7 @@ def _fill_how_heard(page: Any, profile: Profile, filled: list, skipped: list, no
     if _is_multiselect_control(control):
         chips = _multiselect_chips(control)
         if not chips:
-            chips = _walk_how_heard_multiselect(page, control, terms, notes)
+            chips = _walk_how_heard_multiselect(page, control, terms, notes, company=company)
         if chips:
             filled.append({
                 "label": "How Did You Hear About Us?",
@@ -3089,6 +3286,11 @@ def _fill_proposed_start_date(
     if field is None:
         return
     try:
+        if field.locator("textarea").count():
+            return
+    except Exception:
+        pass
+    try:
         text = field.inner_text() or ""
     except Exception:
         text = "Proposed Start Date"
@@ -3457,13 +3659,43 @@ def application_question_answers(profile: Profile) -> list[tuple[re.Pattern, str
     add(
         r"current or former government employee|"
         r"current or former (federal|state|local).{0,40}employee|"
-        r"former government (employee|official)|government employee",
+        r"former government (employee|official)|government employee|"
+        r"currently working for a government entity|government entity or have you in the past",
         "government_employee",
         _yes_no_terms(
             _extra_bool(profile, "government_employee", default=False)
             or _extra_bool(profile, "government_official", default=False)
         ),
     )
+    add(
+        r"unrestricted employment authorization|\birca\b",
+        "unrestricted_authorization",
+        ["Yes"],
+    )
+    add(
+        r"list of parties excluded|\bgsa\b.{0,40}exclu",
+        "gsa_excluded",
+        ["No"],
+    )
+    from apply_engine.questions import _grad_on_or_after
+
+    add(
+        r"currently a student.{0,160}graduat.{0,80}(on or after|after).{0,20}december 2027|"
+        r"confirm you are currently a student.{0,80}(returning|graduat)",
+        "student_through_dec_2027",
+        _yes_no_terms(_grad_on_or_after(profile, 12, 2027)),
+    )
+    add(
+        r"internship program begins|program begins .{0,60} through ",
+        "internship_term_confirm",
+        ["Yes"],
+    )
+    if profile.requires_housing is not None:
+        add(
+            r"require housing if hired|will you require housing|need housing|relocation housing",
+            "requires_housing",
+            _yes_no_terms(profile.requires_housing),
+        )
     add(
         r"minimum qualification|certify you meet",
         "meets_qualifications",
@@ -4022,8 +4254,69 @@ def _listbox_button_for_label(page: Any, source: str) -> Any | None:
     return None
 
 
-def _fill_application_questions(page: Any, profile: Profile, filled: list, skipped: list) -> None:
-    """Fill Application Questions dropdowns from profile-backed rules."""
+def _fill_question_textarea(
+    page: Any,
+    field: Any,
+    text: str,
+    profile: Profile,
+    filled: list,
+    skipped: list,
+    notes: list,
+    job_title: str,
+    job_text: str,
+) -> bool:
+    """Fill or park a Workday Application Question textarea. True when this field is a textarea."""
+    areas = field.locator("textarea")
+    try:
+        if not areas.count() or not areas.first.is_visible():
+            return False
+        box = areas.first
+    except Exception:
+        return False
+    from apply_engine.answers import looks_open_ended
+    from apply_engine.questions import Context, resolve
+
+    ctx = Context(job_title=job_title or "", description=job_text or "")
+    want = resolve(text, profile, ctx)
+    required = "*" in (text or "")
+    label = " ".join((text or "").split())[:120]
+    if want is not None and want.essay:
+        skipped.append({"label": label or "essay", "reason": "essay: needs_user", "mapped_to": "essay"})
+        notes.append(f"needs_user: review essay {label[:80]!r}")
+        return True
+    if want is not None and want.leave_blank:
+        return True
+    value = (want.text if want and want.text else "") or ""
+    if not value and want is not None and want.terms:
+        value = want.terms[0]
+    if not value:
+        if required or (want is not None and want.key == "requires_housing"):
+            skipped.append({
+                "label": label or "application question",
+                "reason": "required textarea has no grounded rule" if want is None else f"no profile value for {want.key}",
+                "mapped_to": (want.key if want else "application_question"),
+            })
+            notes.append(f"needs_user: required Application Question left blank ({label[:60]})")
+        return True
+    if looks_open_ended(text) and (want is None or want.essay):
+        skipped.append({"label": label or "essay", "reason": "essay: needs_user", "mapped_to": "essay"})
+        notes.append(f"needs_user: review essay {label[:80]!r}")
+        return True
+    _write_plain_text(page, box, value, want.key if want else "application_question", filled, skipped)
+    return True
+
+
+def _fill_application_questions(
+    page: Any,
+    profile: Profile,
+    filled: list,
+    skipped: list,
+    notes: list | None = None,
+    job_title: str = "",
+    job_text: str = "",
+) -> None:
+    """Fill Application Questions dropdowns and textareas from profile-backed rules."""
+    notes = notes if notes is not None else []
     fields = page.locator("[data-automation-id*='formField']")
     try:
         count = fields.count()
@@ -4039,6 +4332,20 @@ def _fill_application_questions(page: Any, profile: Profile, filled: list, skipp
                 continue
             text = field.inner_text() or ""
         except Exception:
+            continue
+        if _fill_question_textarea(page, field, text, profile, filled, skipped, notes, job_title, job_text):
+            continue
+        if profile.requires_housing is None and re.search(
+            r"require housing if hired|will you require housing|need housing|relocation housing",
+            text,
+            re.I,
+        ):
+            skipped.append({
+                "label": " ".join(text.split())[:120] or "requires_housing",
+                "reason": "no profile value for requires_housing",
+                "mapped_to": "requires_housing",
+            })
+            notes.append("needs_user: requires_housing is not on the profile — do not guess")
             continue
         matched = match_application_question(text, profile)
         if matched is None:

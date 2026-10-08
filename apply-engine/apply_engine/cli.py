@@ -43,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
     p_fill.add_argument("--resume", help="Resume PDF to attach (default: latest tailored)")
     p_fill.add_argument("--queue-id", help="Queue id to update")
     p_fill.add_argument("--headed", action="store_true")
+    p_fill.add_argument("--allow-req", action="append", default=[], help="Req/job id that may proceed past a company-level do-not-retry")
+    p_fill.add_argument("--allow-url", action="append", default=[], help="URL that may proceed past a company-level do-not-retry")
 
     p_apply = sub.add_parser("apply", help="Tailor + fill, then park for review (never submits)")
     _add_common(p_apply)
@@ -56,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Attach a generated resume built from PROJECT_POOL instead of profile.resume_path",
     )
     p_apply.add_argument("--jd-text")
+    p_apply.add_argument("--allow-req", action="append", default=[], help="Req/job id that may proceed past a company-level do-not-retry")
+    p_apply.add_argument("--allow-url", action="append", default=[], help="URL that may proceed past a company-level do-not-retry")
 
     p_status = sub.add_parser("status", help="List apply-queue items")
     _add_common(p_status)
@@ -208,7 +212,7 @@ def cmd_fill(args: argparse.Namespace, submit: bool) -> int:
     profile = load_profile(paths["profile"])
     load_pool(paths["pool"])
     url = args.url
-    blocked = _do_not_retry_error(url, paths)
+    blocked = _do_not_retry_error(url, paths, allow_reqs=getattr(args, "allow_req", None), allow_urls=getattr(args, "allow_url", None))
     if blocked:
         _emit(blocked)
         return 3
@@ -257,7 +261,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
     profile = load_profile(paths["profile"])
     load_pool(paths["pool"])
     url = getattr(args, "url", None) or getattr(args, "jd_url", None)
-    blocked = _do_not_retry_error(url, paths)
+    blocked = _do_not_retry_error(url, paths, allow_reqs=getattr(args, "allow_req", None), allow_urls=getattr(args, "allow_url", None))
     if blocked:
         _emit(blocked)
         return 3
@@ -267,7 +271,13 @@ def cmd_apply(args: argparse.Namespace) -> int:
         return 2
     job = _job_from_args(args)
     # The JD may name a blocked company the URL did not.
-    blocked = _do_not_retry_error(job.url or url, paths, job.company)
+    blocked = _do_not_retry_error(
+        job.url or url,
+        paths,
+        job.company,
+        allow_reqs=getattr(args, "allow_req", None),
+        allow_urls=getattr(args, "allow_url", None),
+    )
     if blocked:
         _emit(blocked)
         return 3
@@ -323,11 +333,23 @@ def cmd_apply(args: argparse.Namespace) -> int:
 
 
 
-def _do_not_retry_error(url: str, paths: dict, company: str = "") -> dict | None:
-    """Refuse blocked companies before a browser or PDF is ever created."""
+def _do_not_retry_error(
+    url: str,
+    paths: dict,
+    company: str = "",
+    allow_reqs: list[str] | None = None,
+    allow_urls: list[str] | None = None,
+) -> dict | None:
+    """Refuse blocked jobs before a browser or PDF is ever created."""
     if not url:
         return None
-    blocked = retry_policy.check(url, company, paths.get("do_not_retry"))
+    blocked = retry_policy.check(
+        url,
+        company,
+        paths.get("do_not_retry"),
+        allow_reqs=allow_reqs,
+        allow_urls=allow_urls,
+    )
     if blocked is None:
         return None
     return retry_policy.result_payload(blocked, url, company)

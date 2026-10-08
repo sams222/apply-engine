@@ -1,8 +1,9 @@
 {
-  "_comment": "Copy to <data-tree>/do-not-retry.json. motorola/doordash/bedrock are also hard-coded as SEED in apply_engine/retry_policy.py and cannot be removed by editing this file.",
-  "companies": [
-    "motorola",
-    "doordash",
-    "bedrock"
-  ]
+  "_comment": "Copy to <data-tree>/do-not-retry.json. SEED_JOBS in apply_engine/retry_policy.py are job-level (Motorola R68388, DoorDash 8171041) and cannot be removed by editing this file. Company entries still block every URL at that firm.",
+  "jobs": [
+    "wd:motorolasolutions.wd5:R68388",
+    "gh:doordashusa:8171041"
+  ],
+  "companies": [],
+  "allow": []
 }
