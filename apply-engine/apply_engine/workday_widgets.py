@@ -1557,6 +1557,9 @@ HOW_HEARD_AIDS = (
 
 
 def find_how_heard_control(page: Any) -> Any | None:
+    wrapped = form_field_control(page, *HOW_HEARD_AIDS)
+    if wrapped is not None:
+        return wrapped
     for aid in HOW_HEARD_AIDS:
         loc = page.locator(f'[data-automation-id="{aid}"]')
         try:
@@ -1567,6 +1570,12 @@ def find_how_heard_control(page: Any) -> Any | None:
     # Fall back to the labelled prompt, which Walmart marks required.
     try:
         loc = page.get_by_label("How Did You Hear About Us?", exact=False)
+        if loc.count() and loc.first.is_visible():
+            return loc.first
+    except Exception:
+        pass
+    try:
+        loc = page.get_by_role("button", name=re.compile(r"how did you hear", re.I))
         if loc.count() and loc.first.is_visible():
             return loc.first
     except Exception:
@@ -1832,33 +1841,56 @@ def _walk_how_heard_multiselect(
                         best = (cat, leaf, score)
                 leaf_hit = _pick_how_heard_option(kids, terms, company)
                 if leaf_hit and _how_heard_leaf_score(leaf_hit[1], company) >= 5:
-                    hit = leaf_hit
+                    o = _reveal_how_heard_option(page, leaf_hit[1])
+                    if o is not None and click_opt(o):
+                        hit = (o, leaf_hit[1])
+                        log.append(("clicked-leaf", leaf_hit[1]))
+                        break
+                    hit = (None, leaf_hit[1])
                     break
                 hit = None
                 back = page.locator("[data-automation-id='backButton'], [aria-label*='Back' i]")
-                if back.count():
-                    back.first.click(timeout=2000)
-                    _settle(page, 600)
+                went_back = False
+                try:
+                    if back.count() and back.first.is_visible():
+                        back.first.click(timeout=2000)
+                        _settle(page, 600)
+                        went_back = True
+                except Exception:
+                    went_back = False
+                if not went_back:
+                    try:
+                        page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+                    _settle(page, 300)
+                    try:
+                        control.click(timeout=3000)
+                    except Exception:
+                        pass
+                    _settle(page, 800)
             if (hit is None or _how_heard_leaf_score(hit[1], company) < 5) and best and best[2] > 0:
                 hit = (None, best[1])
                 log.append(("best", best))
         if hit:
             o, t = hit
-            if o is None and best:
-                page.keyboard.press("Escape")
-                _settle(page, 300)
-                control.click(timeout=3000)
-                _settle(page, 600)
-                cat_loc = _reveal_how_heard_option(page, best[0])
-                if cat_loc is not None:
-                    click_opt(cat_loc)
+            chips_now = _multiselect_chips(control)
+            if chips_now:
+                log.append(("clicked", t))
+            else:
+                if o is None and best:
+                    page.keyboard.press("Escape")
+                    _settle(page, 300)
+                    control.click(timeout=3000)
                     _settle(page, 600)
-                    _scroll_how_heard_options(page)
-                o = _reveal_how_heard_option(page, t)
-            if o is None:
-                o = _reveal_how_heard_option(page, t)
-            if o is not None:
-                click_opt(o)
+                    cat_loc = _reveal_how_heard_option(page, best[0])
+                    if cat_loc is not None:
+                        click_opt(cat_loc)
+                        _settle(page, 600)
+                        _scroll_how_heard_options(page)
+                o = _reveal_how_heard_option(page, t) or o
+                if o is not None:
+                    click_opt(o)
             _settle(page, 800)
             log.append(("clicked", t))
             if not _multiselect_chips(control):

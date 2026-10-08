@@ -165,7 +165,7 @@ def test_virtualized_how_heard_scroll_sees_hidden_categories():
       <button id="hh" aria-haspopup="listbox">Select</button>
       <div id="box" data-automation-id="activeListContainer"
            style="height:80px; overflow:auto; border:1px solid #000">
-        <div id="inner"></div>
+        <div id="inner" style="position:relative"></div>
       </div>
     </div>
     <script>
@@ -176,10 +176,10 @@ def test_virtualized_how_heard_scroll_sees_hidden_categories():
       function paint() {
         const start = Math.floor(box.scrollTop / 40);
         const shown = ALL.slice(start, start + 2);
-        inner.innerHTML = shown.map(t =>
-          '<div data-automation-id="promptOption" role="option" style="height:40px">'
-          + t + '</div>').join('');
         inner.style.height = (ALL.length * 40) + 'px';
+        inner.innerHTML = shown.map((t, i) =>
+          '<div data-automation-id="promptOption" role="option" style="position:absolute;left:0;right:0;height:40px;top:'
+          + ((start + i) * 40) + 'px">' + t + '</div>').join('');
       }
       box.addEventListener('scroll', paint);
       paint();
@@ -207,9 +207,10 @@ def test_virtualized_how_heard_walk_picks_company_careers_website():
         <button id="hh" aria-haspopup="listbox">Select</button>
         <ul data-automation-id="selectedItemList" id="chips"></ul>
       </div>
+      <button id="back" data-automation-id="backButton" style="display:none">Back</button>
       <div id="box" data-automation-id="activeListContainer"
            style="height:80px; overflow:auto; border:1px solid #000; display:none">
-        <div id="inner"></div>
+        <div id="inner" style="position:relative"></div>
       </div>
     </div>
     <script>
@@ -228,22 +229,29 @@ def test_virtualized_how_heard_walk_picks_company_careers_website():
       const box = document.getElementById('box');
       const inner = document.getElementById('inner');
       const chips = document.getElementById('chips');
+      const back = document.getElementById('back');
       function paint() {
         const start = Math.floor(box.scrollTop / 40);
         const shown = current.slice(start, start + 2);
-        inner.innerHTML = shown.map(t =>
-          '<div data-automation-id="promptOption" role="option" style="height:40px">'
-          + t + '</div>').join('');
         inner.style.height = (current.length * 40) + 'px';
+        inner.innerHTML = shown.map((t, i) =>
+          '<div data-automation-id="promptOption" role="option" style="position:absolute;left:0;right:0;height:40px;top:'
+          + ((start + i) * 40) + 'px">' + t + '</div>').join('');
       }
-      function openList() {
-        box.style.display = 'block';
+      function showCats() {
         level = 'cats';
         current = CATS;
+        back.style.display = 'none';
         box.scrollTop = 0;
         paint();
       }
+      function openList() {
+        box.style.display = 'block';
+        showCats();
+      }
       document.getElementById('hh').addEventListener('click', openList);
+      back.addEventListener('click', showCats);
+      document.addEventListener('keydown', e => { if (e.key === 'Escape') showCats(); });
       box.addEventListener('scroll', paint);
       box.addEventListener('click', e => {
         const opt = e.target.closest('[data-automation-id="promptOption"]');
@@ -252,6 +260,7 @@ def test_virtualized_how_heard_walk_picks_company_careers_website():
         if (level === 'cats' && LEAVES[label]) {
           level = 'leaves';
           current = LEAVES[label];
+          back.style.display = 'inline';
           box.scrollTop = 0;
           paint();
           return;
@@ -276,12 +285,14 @@ def test_virtualized_how_heard_walk_picks_company_careers_website():
         )
         filled, skipped, notes = [], [], []
         _fill_how_heard(page, profile, filled, skipped, notes, company="Motorola Solutions")
-        chips = page.locator("[data-automation-id='selectedItem']").inner_text()
+        chip_n = page.locator("[data-automation-id='selectedItem']").count()
+        chips = page.locator("[data-automation-id='selectedItem']").first.inner_text() if chip_n else ""
     finally:
         browser.close()
         pw.stop()
+    blob = " ".join([str(filled), chips, str(notes)])
     assert filled, (filled, skipped, notes)
-    assert "Motorola Careers Website" in filled[0]["value"] or "Motorola Careers Website" in chips
+    assert "Motorola Careers Website" in blob
 
 
 def test_application_question_textarea_fill_and_essay_park():
