@@ -214,7 +214,8 @@ def _pick_locations(profile: Profile, rank: int = 1) -> Callable[[list[str]], li
 
 
 _HOW_HEARD_BOARD_RE = re.compile(
-    r"relish|linkedin|indeed|glassdoor|handshake|ziprecruiter|monster|referral|recruiter"
+    r"relish|linkedin|indeed|glassdoor|handshake|ziprecruiter|monster|referral|recruiter|"
+    r"university career board|campus/university|emeainternetjobsites"
 )
 _HOW_HEARD_COMPANY_RE = re.compile(
     r"company (career site|careers?( page| site| website)?|website|site)|"
@@ -223,23 +224,54 @@ _HOW_HEARD_COMPANY_RE = re.compile(
 )
 
 
-def _how_heard_score(option: str) -> int:
-    """Higher is better. Company/Corporate Website beat a generic Career Site."""
+def _company_tokens(company: str) -> list[str]:
+    """Tokens from 'Motorola Solutions' or a tenant host like motorolasolutions."""
+    raw = (company or "").strip().lower()
+    if not raw:
+        return []
+    seen: list[str] = []
+    for tok in re.findall(r"[a-z]{4,}", raw):
+        if tok not in seen:
+            seen.append(tok)
+    compact = re.sub(r"[^a-z0-9]+", "", raw)
+    if compact and compact not in seen:
+        seen.append(compact)
+    return seen
+
+
+def _how_heard_score(option: str, company: str = "") -> int:
+    """Higher is better. '<Company> Careers Website' beats a generic Website."""
     low = norm(option)
     if _HOW_HEARD_BOARD_RE.search(low):
         return 0
+    co = re.sub(r"[^a-z0-9]+", "", (company or "").lower())
+    if co and re.search(r"career", low):
+        compact_opt = re.sub(r"[^a-z0-9]+", "", low)
+        if co in compact_opt:
+            return 6
+        for tok in re.findall(r"[a-z]{4,}", low):
+            if tok in co:
+                return 6
+        for tok in _company_tokens(company):
+            if tok in low:
+                return 6
     if re.search(
         r"company website|corporate website|corporate careers website|"
-        r"company career site|company careers (page|site|website)|employer website",
+        r"company careers website|company career site|company careers (page|site|website)|"
+        r"employer website",
         low,
     ):
-        return 4
+        return 5
     if re.search(r"^career site$|^careers page$|^careers site$|^career page$|^career website$", low):
         return 3
     if _HOW_HEARD_COMPANY_RE.search(low):
         return 3
-    if re.search(r"\bwebsite\b", low):
+    if re.search(r"\bwebsite\b", low) and not re.search(r"university|campus|job board", low):
         return 2
+    if re.search(r"facebook", low):
+        return 1
+    if re.search(r"social media", low):
+        return 1
     if re.search(r"career", low):
         return 1
     if re.search(r"^other\b", low):
@@ -247,13 +279,16 @@ def _how_heard_score(option: str) -> int:
     return -1
 
 
-def _pick_how_heard(options: list[str]) -> list[str]:
-    ranked = sorted(options, key=lambda o: -_how_heard_score(o))
-    if ranked and _how_heard_score(ranked[0]) > 0:
+def _pick_how_heard(options: list[str], company: str = "") -> list[str]:
+    ranked = sorted(options, key=lambda o: -_how_heard_score(o, company))
+    if ranked and _how_heard_score(ranked[0], company) > 0:
         return [ranked[0]]
-    boards = [o for o in options if _HOW_HEARD_BOARD_RE.search(norm(o)) and "career" in norm(o)]
-    if boards:
-        return boards[:1]
+    facebook = [o for o in options if re.search(r"facebook", norm(o))]
+    if facebook:
+        return facebook[:1]
+    social = [o for o in options if re.search(r"social media", norm(o))]
+    if social:
+        return social[:1]
     others = [o for o in options if re.search(r"^other\b", norm(o))]
     return others[:1]
 
@@ -485,15 +520,23 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
     add(r"do you (currently )?(reside|live) in|are you (currently )?(located|based|living|residing) in",
         lambda q, p, c: _reside_want(p, q))
     add(r"relocat",
-        lambda q, p, c: Want(key="willing_to_relocate", text="Yes", terms=["Yes"], polarity=True, select_all=True)
-        if _bool(p, "willing_to_relocate") and re.search(r"(all|which|select|indicate).{0,40}(locations?|cities|offices?)(\(s\))?", q)
+        lambda q, p, c: Want(
+            key="willing_to_relocate",
+            text=_relocate_text(p, q),
+            terms=["Yes"] if not re.search(r"list cities|which cities|what cities", q) else _relocate_cities(p),
+            polarity=True,
+            select_all=True,
+        )
+        if _bool(p, "willing_to_relocate") and re.search(
+            r"(all|which|select|indicate|list).{0,40}(locations?|cities|offices?)(\(s\))?", q
+        )
         else _yn("willing_to_relocate", _bool(p, "willing_to_relocate")))
     add(r"(able|willing|available) to work (from|at|in|out of) .{0,40}\b(hub|office|campus)\b",
         lambda q, p, c: _yn("willing_onsite", bool(_bool(p, "willing_onsite")) and bool(_bool(p, "willing_to_relocate"))))
     add(r"on-?site|in[- ]office|in[- ]person|hybrid|commute|anchor days|days (a|per) week|return to office|work from (the|our) office",
         lambda q, p, c: _yn("willing_onsite", _bool(p, "willing_onsite")))
     add(r"willing to travel|travel (requirement|up to)", lambda q, p, c: _yn("willing_to_travel", _bool(p, "willing_to_travel")))
-    add(r"(salary|compensation|pay|hourly rate|wage).{0,30}(expect|requirement|desired|range)|desired (salary|pay|compensation)|expected (salary|pay|compensation)",
+    add(r"(salary|compensation|pay|hourly rate|wage).{0,30}(expect|requirement|desired|range)|desired (salary|pay|compensation)|expected (salary|pay|compensation)|base salary range",
         lambda q, p, c: _pay_want(p, c))
     add(r"final year of (study|school|college|university|your)|end[- ]of[- ]stud(y|ies)|last year of (study|school|college|university)",
         lambda q, p, c: _yn("final_year", class_standing(p, c.today) == "Senior") if class_standing(p, c.today) else None)
@@ -505,7 +548,7 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
         lambda q, p, c: _yn("time_sensitive", _bool(p, "time_sensitive_offers")))
     add(r"academic requirements",
         lambda q, p, c: Want(key="academic_requirements", text="No", terms=["No", "None"], polarity=False))
-    add(r"(earliest|when).{0,40}(start|available|availability)|start date|available to (start|begin)",
+    add(r"(earliest|when).{0,40}(start|available|availability)|start date|available to (start|begin)|available to start a new position",
         lambda q, p, c: _start_want(p, c))
     add(r"(high school|secondary school) name|name of (your )?(high|secondary) school|which high school",
         lambda q, p, c: Want(key="high_school_name", text=str(_extra(p, "high_school_name")),
@@ -539,7 +582,7 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
         r"expected (grad|completion)|"
         r"grad(uation)? (date|year)|class of",
         lambda q, p, c: _graduation_want(p, q))
-    add(r"\bgpa\b|grade point", lambda q, p, c: Want(key="gpa", text=p.gpa, terms=_gpa_terms(p.gpa)) if p.gpa else None)
+    add(r"\bg\.?\s*p\.?\s*a\.?\b|\bgpa\b|grade point", lambda q, p, c: Want(key="gpa", text=p.gpa, terms=_gpa_terms(p.gpa)) if p.gpa else None)
     add(r"(when did you|date you|when you) (begin|start|began|started|enroll).{0,60}(degree|program|studies|school|college|university)",
         lambda q, p, c: _month_year_want("education_start", p.education_start, q))
     add(r"(when do you|when will you|date you) (expect to |plan to |anticipate )?(complete|finish|graduate).{0,60}(degree|program|studies)?|expected (completion|end) date",
@@ -556,7 +599,7 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
         lambda q, p, c: _degree_want(p))
     add(r"\bmajor\b(?! life)|field of study|area of study|discipline|concentration|program of study",
         lambda q, p, c: _field_of_study_want(p))
-    add(r"\bgpa\b|grade point", lambda q, p, c: Want(key="gpa", text=p.gpa, terms=_gpa_terms(p.gpa)) if p.gpa else None)
+    add(r"\bg\.?\s*p\.?\s*a\.?\b|\bgpa\b|grade point", lambda q, p, c: Want(key="gpa", text=p.gpa, terms=_gpa_terms(p.gpa)) if p.gpa else None)
     add(r"coursework|relevant courses|courses (you('ve| have)|taken)", lambda q, p, c: Want(key="coursework", essay=True))
 
     # Experience
@@ -591,9 +634,13 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
                              terms=[l.get("language", "") for l in (_extra(p, "languages") or [])] or ["English"]))
 
     # Sourcing
-    add(r"how did you (first )?(hear|find|learn|discover|come across|connect)|where have you (first )?(heard|learned|seen)|how you (first )?(heard|found|learned|discovered)|where did you (first )?(hear|find|learn|see)|source of (application|referral)|how were you referred|referral source",
-        lambda q, p, c: Want(key="how_heard", text="Company website", pick=_pick_how_heard,
-                             terms=["Company Website", "Company Career Site", "Careers Page", "Career Site", "Website"]))
+    add(r"how did you (first )?(hear|find|learn|discover|come across|connect)|where have you (first )?(heard|learned|seen)|how you (first )?(heard|found|learned|discovered)|where did you (first )?(hear|find|learn|see)|source of (application|referral)|how were you referred|referral source|how did you hear about this program",
+        lambda q, p, c: Want(
+            key="how_heard",
+            text=(p.how_heard or "Company Website"),
+            pick=lambda opts, company=c.company: _pick_how_heard(opts, company),
+            terms=["Company Website", "Company Career Site", "Corporate Careers Website", "Careers Page", "Career Site", "Website"],
+        ))
 
     # Voluntary self-identification
     add(r"transgender|gender identity.{0,40}(different|same)|identify as trans",
@@ -609,6 +656,23 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
     add(r"\bgender\b|\bsex\b", lambda q, p, c: Want(key="gender", text=p.eeo.gender, terms=_gender_terms(p.eeo.gender)) if p.eeo.gender else None)
     add(r"veteran|military service|armed forces", lambda q, p, c: _veteran_want(p))
     add(r"disabilit", lambda q, p, c: _disability_want(p))
+
+    add(r"best way to contact|preferred (contact|method of contact)|how should we (reach|contact)",
+        lambda q, p, c: Want(key="best_contact", text=_contact_text(p), terms=[p.email, p.phone]))
+    add(r"unrestricted employment authorization|\birca\b",
+        lambda q, p, c: _yn("unrestricted_authorization", bool(p.work_authorized_us) and p.need_sponsorship is False))
+    add(r"list of parties excluded|\bgsa\b.{0,40}exclu",
+        lambda q, p, c: _yn("gsa_excluded", False))
+    add(r"currently working for a government entity|government entity or have you in the past|"
+        r"currently (or have you( ever)?)? work(ed|ing)? for (a |any )?(federal|state|local )?government",
+        lambda q, p, c: _yn("government_employee", False))
+    add(r"require housing if hired|will you require housing|need housing|relocation housing",
+        lambda q, p, c: _housing_want(p))
+    add(r"currently a student.{0,160}graduat.{0,80}(on or after|after).{0,20}december 2027|"
+        r"confirm you are currently a student.{0,80}(returning|graduat)",
+        lambda q, p, c: _yn("student_through_dec_2027", _grad_on_or_after(p, 12, 2027)))
+    add(r"internship program begins|program begins .{0,60} through ",
+        lambda q, p, c: _yn("internship_term_confirm", True))
 
     # Acknowledgements (after sms / marketing so those stay unchecked)
     add(r"acknowledge|\bpolicy\b|i agree|agree to|consent|certify|attest|confirm (that|i)|i have read|i understand|privacy (policy|notice)|terms (and|&) conditions|accurate and complete|true and complete",
@@ -657,7 +721,13 @@ def _head(q: str) -> str:
     parts = [s.strip() for s in re.split(r"(?<=[.?!])\s+|\n+", q) if s.strip()]
     questions = [s for s in parts if s.endswith("?")]
     if questions:
-        return questions[-1] if len(questions[-1]) > 12 else questions[0]
+        head = questions[-1] if len(questions[-1]) > 12 else questions[0]
+        idx = q.find(head)
+        if idx >= 0:
+            rest = q[idx + len(head):].strip(" .")
+            if rest and len(rest) < 80 and re.search(r"if so|list |please (list|specify|name)", rest):
+                return f"{head} {rest}"
+        return head
     return q[:200]
 
 
@@ -974,10 +1044,45 @@ def posted_pay_floor(description: str) -> str | None:
 
 
 def _pay_want(p: Profile, c: Context) -> Want:
-    text = posted_pay_floor(c.description) or str(_extra(p, "desired_pay") or _extra(p, "desired_pay_fallback") or "")
-    if not text:
-        return Want(key="desired_pay", leave_blank=True)
+    text = posted_pay_floor(c.description) or str(
+        _extra(p, "desired_pay") or _extra(p, "desired_pay_fallback") or "$30/hour"
+    )
     return Want(key="desired_pay", text=text, terms=[text])
+
+
+def _contact_text(p: Profile) -> str:
+    bits = [x for x in (p.email, p.phone) if x]
+    return " / ".join(bits) or p.email
+
+
+def _relocate_cities(p: Profile) -> list[str]:
+    cities = [str(x) for x in (p.preferred_locations or []) if str(x).strip()]
+    if p.city and p.city not in cities:
+        cities.append(p.city)
+    return cities or ([p.location] if p.location else ["Yes"])
+
+
+def _relocate_text(p: Profile, q: str) -> str:
+    if re.search(r"list cities|which cities|what cities", q):
+        return ", ".join(_relocate_cities(p))
+    return "Yes"
+
+
+def _housing_want(p: Profile) -> Want:
+    val = p.requires_housing
+    if val is None:
+        val = _bool(p, "requires_housing")
+    if val is None:
+        return Want(key="requires_housing")
+    return _yn("requires_housing", val)
+
+
+def _grad_on_or_after(p: Profile, month: int, year: int) -> bool:
+    grad = graduation(p)
+    if not grad:
+        return False
+    g_month, g_year = grad
+    return (g_year, g_month) >= (year, month)
 
 
 US_PLACES = ("united states", "u.s.", "us", "usa", "america")
@@ -1101,9 +1206,15 @@ def _ranked_pref_want(p: Profile, q: str, key: str, *, multi: bool = False) -> W
 
 
 def _start_want(p: Profile, c: Context) -> Want | None:
+    if p.available_from:
+        return Want(
+            key="start_date",
+            text=p.available_from,
+            terms=[p.available_from, "Summer 2027", "May 2027"],
+        )
     start = season_start_date(c)
     if not start:
-        return Want(key="start_date", text=p.available_from, terms=[p.available_from]) if p.available_from else None
+        return None
     name = MONTHS[start.month - 1].capitalize()
     return Want(key="start_date", text=f"{name} {start.year}",
                 terms=[f"{name} {start.year}", f"{name[:3]} {start.year}", start.strftime("%m/%d/%Y"), str(start.year)])

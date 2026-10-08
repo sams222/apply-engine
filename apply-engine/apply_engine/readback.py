@@ -29,22 +29,31 @@ SNAPSHOT_JS = r"""
   const text = (el) => (el ? (el.innerText || el.textContent || '').trim() : '');
 
   const labelFor = (el) => {
+    const wideLegal = (s) => /legal name/i.test(s) && /first name/i.test(s) && /last name/i.test(s);
+    const auto = el.getAttribute('data-automation-id') || '';
+    const fromAid = /firstName/i.test(auto) ? 'First Name' : (/lastName/i.test(auto) ? 'Last Name' : '');
     const aria = el.getAttribute('aria-label');
-    if (aria) return aria.trim();
+    if (aria && !wideLegal(aria)) return aria.trim();
     const ref = el.getAttribute('aria-labelledby');
     if (ref) {
       const parts = ref.split(/\s+/).map(id => text(el.ownerDocument.getElementById(id)));
       const joined = parts.filter(Boolean).join(' ').trim();
-      if (joined) return joined;
+      if (joined && !wideLegal(joined)) return joined;
     }
     if (el.id) {
       const lab = el.ownerDocument.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      if (lab) return text(lab);
+      if (lab) {
+        const t = text(lab);
+        if (t && !wideLegal(t)) return t;
+      }
     }
     const wrap = el.closest('label');
-    if (wrap) return text(wrap);
-    const auto = el.getAttribute('data-automation-id');
-    if (auto) return auto;
+    if (wrap) {
+      const t = text(wrap);
+      if (t && !wideLegal(t)) return t;
+    }
+    if (fromAid) return fromAid;
+    if (auto && !wideLegal(auto)) return auto;
     return el.getAttribute('placeholder') || el.getAttribute('name') || el.id || '';
   };
 

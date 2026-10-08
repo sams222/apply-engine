@@ -77,6 +77,7 @@ def load_profile(path: str | Path) -> Profile:
         "field_of_study",
         "major",
         "previous_employee",
+        "requires_housing",
     }
     extra = {k: v for k, v in raw.items() if k not in known and k != "extra"}
     nested = raw.get("extra")
@@ -121,6 +122,7 @@ def load_profile(path: str | Path) -> Profile:
         how_heard=str(raw.get("how_heard") or ""),
         field_of_study=str(raw.get("field_of_study") or raw.get("major") or "").strip(),
         previous_employee=(parse_bool(raw.get("previous_employee")) is True),
+        requires_housing=parse_bool(raw.get("requires_housing")),
         extra=extra,
     )
 

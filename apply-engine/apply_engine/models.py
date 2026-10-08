@@ -51,6 +51,7 @@ class Profile:
     how_heard: str = ""
     field_of_study: str = ""
     previous_employee: bool = False
+    requires_housing: bool | None = None
     skills: list[str] = field(default_factory=list)
     available_from: str = ""
     extra: dict[str, Any] = field(default_factory=dict)

@@ -96,7 +96,7 @@ Apply only to postings that are all of:
   of preference (skip sales, design, finance, and hardware roles unless the owner asks);
 - on Greenhouse, Lever, Ashby, or Workday.
 
-Skip a posting if `apply` exits with status `do_not_retry` or `already_submitted`.
+Skip a posting if `apply` exits with status `do_not_retry`, `already_submitted`, or `needs_browser`.
 
 ## What each result means
 
@@ -104,6 +104,7 @@ Skip a posting if `apply` exits with status `do_not_retry` or `already_submitted
 |---|---|
 | `waiting_confirm` | Nothing. `auto-confirm` decides. |
 | `needs_user` | Do not retry, except once for "form not ready", "timeout", or "error page". It appears in the digest for the owner. |
+| `needs_browser` | Hand off. Do not retry in this engine (Greenhouse HTTP 406 / WAF). It appears in the digest for the owner. |
 | `already_submitted`, `do_not_retry` | Skip. Never retry. |
 | `error` | Retry once, later. If it fails again, leave it for the digest. |
 

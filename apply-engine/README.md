@@ -175,7 +175,7 @@ Standalone Sign In walls (`/login`, `/private/login`, heading **Sign In** with o
 ## Data shapes
 
 See `examples/profile.json` and `examples/PROJECT_POOL.md`.
-Profile fields: `full_name`, `first_name`, `last_name`, `email`, `phone`, `linkedin`, `github`, `location`, `city`, `state`, `country`, `school`, `degree`, `gpa`, `graduation`, `work_authorized_us`, `need_sponsorship`, `eeo.{gender,race_ethnicity,veteran,disability}`, `resume_path`, `preferred_locations`.
+Profile fields: `full_name`, `first_name`, `last_name`, `email`, `phone`, `linkedin`, `github`, `location`, `city`, `state`, `country`, `school`, `degree`, `gpa`, `graduation`, `work_authorized_us`, `need_sponsorship`, `eeo.{gender,race_ethnicity,veteran,disability}`, `resume_path`, `preferred_locations`, `requires_housing` (optional; omit to park housing questions as `needs_user`).
 
 `gpa` is omitted in the example on purpose. If it is `null`, the engine leaves GPA fields blank.
 
@@ -194,26 +194,32 @@ python -m pytest
 
 ## do-not-retry
 
-Some companies must never be opened again — a burned application, a rejection,
-or a board that has proven unfillable. The engine refuses them **before** a
-browser launches or a PDF is rendered:
+Burned **requisitions** are refused **before** a browser launches or a PDF is
+rendered. Distinct jobs at the same company are not banned just because another
+req is on the list.
 
 ```bash
-python -m apply_engine apply --url "https://careers.doordash.com/jobs/1"
-# APPLY_ENGINE_RESULT: {"status":"do_not_retry","blocked_token":"doordash",...}
+python -m apply_engine apply --url "https://job-boards.greenhouse.io/doordashusa/jobs/8171041"
+# APPLY_ENGINE_RESULT: {"status":"do_not_retry","blocked_token":"8171041","job_key":"gh:doordashusa:8171041",...}
 # exit code 3
 ```
 
-`motorola`, `doordash`, and `bedrock` are hard-coded as `SEED` in
-`apply_engine/retry_policy.py`; emptying or corrupting the JSON file cannot
-re-enable them. Add more in `internship-apps/do-not-retry.json`:
+`SEED_JOBS` in `apply_engine/retry_policy.py` is job-level (Motorola Workday
+`R68388`, Greenhouse `doordashusa/8171041`). Emptying or corrupting the JSON
+file cannot re-enable those reqs. Add more in `internship-apps/do-not-retry.json`:
 
 ```json
-{"companies": ["initech", "acme"]}
+{
+  "jobs": ["wd:motorolasolutions.wd5:R68388", "gh:doordashusa:8171041"],
+  "companies": ["initech"],
+  "allow": ["R68679"]
+}
 ```
 
-Matching is on normalized company name, host, and the first two path segments,
-so `job-boards.greenhouse.io/bedrockrobotics/jobs/1` is caught by `bedrock`.
+`jobs` entries match a Workday `_R####` suffix, Greenhouse `jobs/<id>` / `gh_jid=`,
+or Ashby/Lever UUIDs. `companies` still blocks every URL at that firm (operator
+opt-in). `allow` (or `--allow-req R68679` / `--allow-url`) beats a company-level
+block and never beats a job-level block for the same req.
 
 **Exit codes:** `0` waiting_confirm / submitted · `1` fill failure ·
 `2` config error (e.g. missing Workday password) · `3` do_not_retry.
@@ -277,7 +283,7 @@ field is unfilled, any readback drifts, or submit is ever clicked.
 - Never treat Jobright / extension autofill as resume customization
 - Never submit without `python -m apply_engine confirm --queue-id ID`
 - Deterministic field maps first; LLM only for leftover open-ended questions
-- Never open a do-not-retry company (motorola / doordash / bedrock are seeded)
+- Never open a do-not-retry **job** (Motorola `R68388` and DoorDash greenhouse `8171041` are seeded; other reqs at those companies are not)
 - Never confirm when the filled log disagrees with the screenshot
 - Quote the `tree` fingerprint, not an ad-hoc hash of one file
 
