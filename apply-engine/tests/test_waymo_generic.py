@@ -37,7 +37,7 @@ def _real_profile() -> Path:
     for cand in candidates:
         if cand.exists():
             return cand
-    pytest.skip("no internship-apps data tree on this box")
+    pytest.skip("no internship-apps data tree on this box", allow_module_level=True)
 
 
 REAL_PROFILE = _real_profile()
@@ -154,9 +154,9 @@ def test_waymo_fixture_fill_sticks(tmp_path, monkeypatch):
 
     assert mapped.get("need_sponsorship") == "No"
     assert "not applicable" in str(mapped.get("sponsorship_type") or "").lower()
-    assert "facebook" in str(mapped.get("how_heard") or "").lower() or "social media" in str(
-        mapped.get("how_heard") or ""
-    ).lower()
+    # Fixture has no Company Website option, so Other is the honest careers-page fallback.
+    how = str(mapped.get("how_heard") or "").lower()
+    assert "other" in how or "company website" in how or "career" in how, mapped.get("how_heard")
     assert mapped.get("export_license") == "No"
     assert "never" in str(mapped.get("previous_employee") or "").lower()
     assert "acknowledge" in str(mapped.get("policy_ack") or "").lower()

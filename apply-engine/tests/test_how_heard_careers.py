@@ -50,6 +50,8 @@ def test_answer_is_the_company_site_not_a_social_network():
         (["Corporate Website", "Employee Referral"], "Corporate Website"),
         (["Google Careers Site", "Recruiter"], "Google Careers Site"),
         (["Company Career Site", "Job Fair"], "Company Career Site"),
+        (["Corporate Website", "Career Site", "LinkedIn"], "Corporate Website"),
+        (["Company Careers Page", "Indeed"], "Company Careers Page"),
         (["Relish Careers", "Company Website", "LinkedIn"], "Company Website"),
         (["Relish Careers", "Company Career Site"], "Company Career Site"),
         (["Relish Careers", "Career Site", "Indeed"], "Career Site"),

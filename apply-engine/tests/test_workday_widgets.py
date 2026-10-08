@@ -222,6 +222,30 @@ def test_walmart_application_questions_map_from_profile():
     assert "Opt-out" in match_application_question(WALMART_QUESTIONS["sms"], profile)[1]
 
 
+def test_conflict_related_government_and_noncompete_questions_answer_no():
+    from pathlib import Path
+
+    from apply_engine.profile import load_profile
+    from apply_engine.workday_widgets import PREV_EMPLOYEE_RE, match_application_question
+
+    profile = load_profile(Path(__file__).resolve().parents[1] / "examples" / "profile.json")
+    cases = [
+        ("Are you subject to a non-compete or non-solicitation agreement?", "non_compete", "No"),
+        ("Have you ever worked for ICF or any of its subsidiaries?", "previous_employee", "No"),
+        ("Are you related to a current employee?", "family_at_employer", "No"),
+        ("Are you a current or former government employee?", "government_employee", "No"),
+        ("If you are currently employed by the government, please explain.", "government_ethics_detail", "N/A"),
+        ("Do you have a conflict of interest with this role?", "conflict_of_interest", "No"),
+    ]
+    for q, key, term in cases:
+        got_key, terms = match_application_question(q, profile)
+        assert got_key == key, q
+        assert any(term.lower() == t.lower() for t in terms), (q, terms)
+    assert PREV_EMPLOYEE_RE.search("Are you a former Acme employee?")
+    assert PREV_EMPLOYEE_RE.search("Have you previously worked here?")
+    assert not PREV_EMPLOYEE_RE.search("Are you a current or former government employee?")
+
+
 def test_authorized_without_sponsorship_not_mapped_as_need_sponsorship():
     from pathlib import Path
 

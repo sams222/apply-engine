@@ -9,8 +9,9 @@ ats_recover + run_hunt.main() and asserts it is NOT a silent near-miss:
      Data Scientist Intern gh_jid=8257369 is never attached to the Algorithm card;
   2. unit: careers/custom-host board recovery (fixture of greenhouse board `wehrtyou`) -> gh_jid=7964062
      (PhD twin 8059837 is not chosen by title alone);
-  3. replay A (board fixture): role lands in apply_targets.json with a non-jobright Greenhouse URL;
-  4. replay B (no careers data): role lands in apply_targets.json flagged priority_unresolved, Jobright URL kept;
+  3. replay A (board fixture): HRT lands in apply_targets.json with Greenhouse board `wehrtyou` gh_jid=7964062;
+  4. replay B (known HRT board + a priority firm with no board): HRT still resolves to wehrtyou; Citadel stays
+     flagged priority_unresolved with the Jobright URL (do not drop it as a near-miss);
   5. replay C (already applied): skipped as handled/do_not_retry, never re-targeted;
   6. unit: careers URLs with gh_jid= count as Greenhouse; Jobright-only links are not plain-fetched;
      Jobright-sourced priority roles that are only "stale" by ATS publish date are kept with a flag.
@@ -44,6 +45,9 @@ ALGO = "Algorithm Development (Quant Research & Trading) Internship – Summer 2
 DS_JID = "8257369"
 ALGO_JID = "7964062"
 PHD_JID = "8059837"
+UNRESOLVED_FIRM = "Citadel"
+UNRESOLVED_ROLE = "Software Engineer Intern – Summer 2027"
+UNRESOLVED_URL = "https://jobright.ai/jobs/info/citadel-swe-2027"
 RUN_NOW = datetime(2026, 10, 6, 13, 20, tzinfo=timezone.utc).timestamp()  # when the 9am hunt ran
 DEFAULT_SRC = HERE / "fixtures" / "hrt-miss-2026-10-06"
 
@@ -126,13 +130,28 @@ def extra_behavior_tests():
     print("extra OK: gh_jid= is Greenhouse; stale priority Jobright kept with flag; Jobright-only not fetched")
 
 
-def replay(src: Path, label: str, with_board: bool | None, keep_handled=False, live=False):
+def replay(src: Path, label: str, with_board: bool | None, keep_handled=False, live=False, extra_unresolved=False):
     tmp = Path(tempfile.mkdtemp(prefix=f"hunt-replay-{label}-"))
     for name in ("simplify-summer2027.json", "simplify-newgrad.json", "jobright-ai-readme.md", "raw.txt"):
         if (src / name).exists():
             os.symlink(src / name, tmp / name) if name != "raw.txt" else shutil.copy2(src / name, tmp / name)
     for name in ("jobright-discovery.json", "jobright-ats-resolved.json"):
         shutil.copy2(src_file(src, name), tmp / name)
+    if extra_unresolved:
+        cards = json.loads((tmp / "jobright-discovery.json").read_text())
+        cards.append({
+            "company": UNRESOLVED_FIRM,
+            "title": UNRESOLVED_ROLE,
+            "location": "New York, NY (Onsite)",
+            "posted": "8 hours ago",
+            "date_posted": 1791264000.0,
+            "url": UNRESOLVED_URL,
+            "ats": None,
+            "notes": "Quant; $100/hr - $120/hr",
+            "source": "jobright",
+            "swe_ai": True,
+        })
+        (tmp / "jobright-discovery.json").write_text(json.dumps(cards) + "\n")
     os.environ.update(HUNT_ART=str(tmp), HUNT_NO_ROOT="1", HUNT_OFFLINE="0" if live else "1", HUNT_SLOT="2026-10-06-9am")
     A.set_fetcher(None if live else (fixture_fetcher(with_board) if with_board is not None else (lambda u: (0, ""))))
     sys.modules.pop("run_hunt", None)
@@ -188,13 +207,18 @@ def main():
     assert ALGO in summ.split("## Apply-worthy")[1]
     assert ALGO in (tmp / "sam_digest.md").read_text()
 
-    tmp, targets, t, r = replay(src, "unresolved", with_board=False)
+    tmp, targets, t, r = replay(src, "unresolved", with_board=True, extra_unresolved=True)
     assert t, f"B: HRT Algorithm missing from apply_targets ({r})"
-    assert t[0]["priority_unresolved"] and t[0]["needs_explicit_approval"] and "jobright.ai" in t[0]["url"], t[0]
-    assert ALGO in (tmp / "hunt_summary.md").read_text().split("## Apply-worthy")[1].split("## Flagged separately")[0]
+    assert "jobright.ai" not in t[0]["url"] and t[0]["ats"] == "greenhouse" and ALGO_JID in t[0]["url"], t[0]
+    assert t[0]["url"].endswith(f"/wehrtyou/jobs/{ALGO_JID}") or f"gh_jid={ALGO_JID}" in t[0]["url"], t[0]
+    cit = [x for x in targets if x["company"] == UNRESOLVED_FIRM]
+    assert cit, f"B: {UNRESOLVED_FIRM} missing from apply_targets ({targets})"
+    assert cit[0]["priority_unresolved"] and cit[0]["needs_explicit_approval"] and "jobright.ai" in cit[0]["url"], cit[0]
+    assert UNRESOLVED_ROLE in (tmp / "hunt_summary.md").read_text().split("## Apply-worthy")[1].split("## Flagged separately")[0]
     dig = (tmp / "sam_digest.md").read_text()
-    assert ALGO in dig and "⚑" in dig
-    print(f"AFTER B (no careers data): KEEP ⚑ url={t[0]['url']} flag={t[0]['flag'][:90]!r}…")
+    assert UNRESOLVED_ROLE in dig and "⚑" in dig
+    print(f"AFTER B (HRT board known): HRT KEEP url={t[0]['url']}; "
+          f"{UNRESOLVED_FIRM} ⚑ url={cit[0]['url']} flag={str(cit[0]['flag'])[:90]!r}…")
     print("  digest:\n    " + "\n    ".join(dig.strip().splitlines()[:6]))
 
     tmp, targets, t, r = replay(src, "applied", with_board=True, keep_handled=True)

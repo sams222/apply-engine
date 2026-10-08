@@ -204,24 +204,7 @@ def _fill_education_span(
     when = parse_when(text or "")
     if not when or when.get("current"):
         return
-    year = str(when.get("year") or "")
-    month = str(when.get("month_num") or "")
-    wrote = False
-    if year:
-        year_id = f"{prefix}--{which}-dateSectionYear-input"
-        current = _input_value(page, year_id)
-        if _exists(page, year_id) and year not in current:
-            wrote = _type_into_id(page, year_id, year)
-        elif year in current:
-            wrote = True
-    if month:
-        month_id = f"{prefix}--{which}-dateSectionMonth-input"
-        if _exists(page, month_id) and not _date_value_ok(_input_value(page, month_id), month):
-            typed = _type_into_id(page, month_id, month)
-            if not typed and month.startswith("0"):
-                typed = _type_into_id(page, month_id, str(int(month)))
-            wrote = typed or wrote
-    if wrote:
+    if _write_span(page, prefix, which, when):
         filled.append({
             "label": label,
             "mapped_to": mapped,
@@ -260,8 +243,7 @@ def _fill_education_ids(
     )
     when = parse_when(profile.graduation or "")
     if when.get("year"):
-        year_id = f"{prefix}--lastYearAttended-dateSectionYear-input"
-        if _type_into_id(page, year_id, str(when["year"])):
+        if _write_span(page, prefix, "lastYearAttended", when):
             filled.append({
                 "label": "Graduation",
                 "mapped_to": "graduation",
@@ -347,13 +329,56 @@ def _fill_work_prefix(page: Any, prefix: str, row: PoolEntry, filled: list, skip
         })
 
 
+def _span_container(page: Any, prefix: str, which: str) -> Any | None:
+    month_id = f"{prefix}--{which}-dateSectionMonth-input"
+    try:
+        node_id = page.evaluate(
+            """({monthId, prefix, which}) => {
+              const el = document.getElementById(monthId)
+                || document.querySelector(`[id^="${prefix}--${which}"][id*="dateSectionMonth"]`);
+              if (!el) return '';
+              let node = el;
+              for (let i = 0; i < 12 && node; i++) {
+                const aid = (node.getAttribute && node.getAttribute('data-automation-id')) || '';
+                if (aid.includes('formField') || (node.querySelector && node.querySelector('[data-automation-id="dateSectionYear-display"]'))) {
+                  if (!node.id) node.id = 'apply-engine-date-' + Math.random().toString(36).slice(2);
+                  return node.id;
+                }
+                node = node.parentElement;
+              }
+              if (!el.id) el.id = monthId;
+              return el.id || '';
+            }""",
+            {"monthId": month_id, "prefix": prefix, "which": which},
+        )
+    except Exception:
+        return None
+    if not node_id:
+        return None
+    loc = page.locator(f'[id="{node_id}"]')
+    try:
+        if loc.count():
+            return loc.first
+    except Exception:
+        return None
+    return None
+
+
 def _write_span(page: Any, prefix: str, which: str, when: dict) -> bool:
     month = str(when.get("month_num") or "")
     year = str(when.get("year") or "")
     if not year:
         return False
+    field = _span_container(page, prefix, which)
+    if field is not None:
+        from apply_engine.workday_widgets import _write_date_parts
+
+        if _write_date_parts(page, field, when) or _span_ok(page, prefix, which, when):
+            return True
     month_id = f"{prefix}--{which}-dateSectionMonth-input"
     year_id = f"{prefix}--{which}-dateSectionYear-input"
+    # Month first, then year, then month again if the year's leading 2
+    # landed in the month spinbutton.
     month_ok = True
     if month and _exists(page, month_id) and not _date_value_ok(_input_value(page, month_id), month):
         month_ok = _type_into_id(page, month_id, month)
@@ -362,7 +387,11 @@ def _write_span(page: Any, prefix: str, which: str, when: dict) -> bool:
     year_ok = True
     if _exists(page, year_id) and year not in _input_value(page, year_id):
         year_ok = _type_into_id(page, year_id, year)
-    return month_ok and year_ok
+    if month and _exists(page, month_id) and not _date_value_ok(_input_value(page, month_id), month):
+        month_ok = _type_into_id(page, month_id, month)
+        if not month_ok and month.startswith("0"):
+            month_ok = _type_into_id(page, month_id, str(int(month)))
+    return bool(month_ok and year_ok and (not month or _span_ok(page, prefix, which, when) or _date_value_ok(_input_value(page, month_id), month)))
 
 
 def _wait_new_prefix(page: Any, before: set[str], notes: list) -> str:
@@ -423,6 +452,11 @@ def _type_into_id(page: Any, element_id: str, value: str) -> bool:
         if active != element_id:
             el.click(force=True, timeout=1500)
             el.evaluate("node => { node.focus(); if (node.select) node.select(); }")
+            active = page.evaluate("() => (document.activeElement && document.activeElement.id) || ''")
+            if active != element_id:
+                # Typing a year while the month segment still has focus is how
+                # every month collapsed to February (leading 2 of 2024).
+                return False
         page.keyboard.press("Backspace")
         page.keyboard.type(value, delay=90)
         _wait(page, 120)
@@ -734,6 +768,18 @@ def _span_ok(page: Any, prefix: str, which: str, when: dict) -> bool:
     month = str(when.get("month_num") or "")
     got_year = _input_value(page, f"{prefix}--{which}-dateSectionYear-input")
     got_month = _input_value(page, f"{prefix}--{which}-dateSectionMonth-input")
+    field = _span_container(page, prefix, which)
+    if field is not None:
+        from apply_engine.workday_widgets import _read_date_display
+
+        display = _read_date_display(field)
+        if display is not None:
+            shown_month, _shown_day, shown_year = display
+            if month and not _date_value_ok(shown_month, month):
+                return False
+            if year and not _date_value_ok(shown_year, year):
+                return False
+            return True
     if year and year not in got_year:
         return False
     if month and not _date_value_ok(got_month, month):
@@ -1013,15 +1059,28 @@ def _fill_date_field(field: Any | None, when: dict) -> bool:
     year = str(when.get("year") or "")
     if not year:
         return False
+    try:
+        page = field.page
+    except Exception:
+        page = None
+    if page is not None:
+        from apply_engine.workday_widgets import _write_date_parts
+
+        if _write_date_parts(page, field, when):
+            return True
     controls = _date_controls(field)
     if not controls:
         return False
     if len(controls) == 1:
+        # Never concatenate MMYYYY. A year typed into the month slot becomes 02.
         if month_num:
-            _type_into(controls[0], f"{month_num}{year}")
-        else:
-            _type_into(controls[0], year)
-        return _date_stuck(controls, month_num, year)
+            _write_month(controls[0], month_num, month_name)
+            try:
+                controls[0].press("Tab")
+            except Exception:
+                pass
+        _write_year(controls[0], year)
+        return _date_stuck(_date_controls(field) or controls, month_num, year)
     # Month / day / year: the day slot stays blank. We only know month and year.
     year_at = -1 if len(controls) >= 3 else 1
     if month_num:
@@ -1033,7 +1092,9 @@ def _fill_date_field(field: Any | None, when: dict) -> bool:
 
 
 def _date_controls(field: Any) -> list[Any]:
-    loc = field.locator("input:not([type=hidden]):not([type=checkbox]):not([type=radio]), select")
+    loc = field.locator(
+        "input:not([type=hidden]):not([type=checkbox]):not([type=radio]), select, [role=spinbutton]"
+    )
     out: list[Any] = []
     try:
         count = min(loc.count(), 4)

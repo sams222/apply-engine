@@ -233,6 +233,23 @@ VISIBLE_OPTIONS_JS = r"""
 
 PLACEHOLDERS = {"select...", "select", "select one", "--", "please select", "choose...", "choose one"}
 
+
+def essay_prompt(g: dict) -> str:
+    """The question to send to the LLM. Do not dump sibling fields from the container."""
+    label = (g.get("label") or "").strip()
+    ctx = (g.get("context") or "").strip()
+    if not ctx:
+        return label
+    if not label:
+        return ctx
+    # Greenhouse often wraps every question in one block, so context includes
+    # "expected graduation / how heard / relocate" next to the essay.
+    if ctx.count("?") > label.count("?"):
+        return label
+    if label in ctx:
+        return ctx
+    return f"{label}\n{ctx}"
+
 # Conditional follow-ups ("If yes, which visa?") that only apply to an answer we did not give.
 FOLLOWUP_RE = re.compile(
     r"^(if (yes|so|applicable|other|not|no)\b|if you (answered|selected|chose|responded|checked|picked)\b|if your answer)"
@@ -280,6 +297,10 @@ class FormFiller:
             progressed = False
             for g in self.extract():
                 if g["kind"] == "file":
+                    if g["gid"] in self.done or g["gid"] in self.failed:
+                        continue
+                    if self._fill_file(g):
+                        progressed = True
                     continue
                 if g["gid"] in self.failed:
                     # Empty comboboxes (Country* with options still loading) retry.
@@ -444,6 +465,34 @@ class FormFiller:
                 return self._fill_combobox(g, want)
         except Exception as exc:
             self._fail(g, f"{kind} write error: {exc}"[:180])
+        return False
+
+    def _fill_file(self, g: dict) -> bool:
+        from apply_engine.fields import file_input_kind, profile_transcript_path
+
+        label = g.get("label") or ""
+        kind = file_input_kind(label, g.get("name") or "", g.get("id") or "")
+        if g.get("current"):
+            self.done.add(g["gid"])
+            return False
+        if kind == "cover_letter":
+            return self._fail(g, "no tailored cover-letter file") if g.get("required") else False
+        if kind == "transcript":
+            path = profile_transcript_path(self.profile)
+            if not path:
+                return self._fail(g, "required transcript; no transcript_path on profile") if g.get("required") else False
+            loc = self._loc(g)
+            loc.set_input_files(path, timeout=8000)
+            shown = loc.evaluate("el => el.files && el.files[0] ? el.files[0].name : ''")
+            if not shown:
+                return self._fail(g, "transcript did not stick")
+            self._record(g, "transcript", path, "file")
+            return True
+        if kind == "resume":
+            return self._fail(g, "resume file empty") if g.get("required") else False
+        if g.get("required"):
+            return self._fail(g, "required file upload has no profile file")
+        self.done.add(g["gid"])
         return False
 
     def _fill_text(self, g: dict, want: Want | None) -> bool:
@@ -835,9 +884,7 @@ class FormFiller:
             return self._saved(g)
         if not llm.available():
             return None
-        question = g.get("context") or g.get("label") or ""
-        if g.get("label") and g["label"] not in question:
-            question = f"{g['label']}\n{question}"
+        question = essay_prompt(g)
         hint = ""
         if g.get("maxlength"):
             hint = f"at most {g['maxlength']} characters"
@@ -904,7 +951,9 @@ class FormFiller:
                 self.notes.append(f"needs_user: required question unanswered: {label} ({reason})")
             self.skipped.append({"label": label, "reason": reason})
         for gid, g in final.items():
-            if gid in self.done or gid in self.failed or g["kind"] == "file":
+            if gid in self.done or gid in self.failed:
+                continue
+            if g["kind"] == "file" and not g.get("required"):
                 continue
             if g.get("required") and not g.get("current"):
                 label = (g.get("label") or "unlabeled")[:160]

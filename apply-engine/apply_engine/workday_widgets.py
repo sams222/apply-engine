@@ -12,6 +12,7 @@ while the State widget still says Illinois.
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import date
 from typing import Any, Callable, Iterable
@@ -492,7 +493,9 @@ def widget_readback(locator: Any) -> str:
                     const o = el.options[el.selectedIndex];
                     return clean((o && o.text) || '');
                   }
-                  const inMulti = !!el.closest("[data-automation-id='multiSelectContainer']");
+                  const inMulti = !!el.closest("[data-automation-id='multiSelectContainer']")
+                    || !!el.closest("[data-automation-id='multiselectInputContainer']")
+                    || !!(el.getAttribute && /selectinput|multiselect/i.test(el.getAttribute('data-uxi-widget-type') || ''));
                   if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && !inMulti) {
                     if (clean(el.value)) return clean(el.value);
                   } else if (!inMulti) {
@@ -545,6 +548,7 @@ def widget_readback(locator: Any) -> str:
                     if (picked) return picked;
                     node = node.parentElement;
                   }
+                  if (inMulti) return '';
                   if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return clean(el.value);
                   return clean(el.innerText || el.textContent || '');
                 }"""
@@ -895,6 +899,7 @@ def _click_exact_text(page: Any, text: str) -> bool:
                 const own = clean([...node.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(''));
                 const full = clean(node.innerText);
                 if (own !== text && full !== text) continue;
+                node.scrollIntoView({block: 'nearest', inline: 'nearest'});
                 const r = node.getBoundingClientRect();
                 if (r.width < 8 || r.height < 8 || r.height > 48) continue;
                 if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) continue;
@@ -988,6 +993,7 @@ def _mouse_click_visible_option(page: Any, text: str) -> bool:
               for (const node of nodes) {
                 const label = clean(node.getAttribute('data-automation-label') || node.innerText);
                 if (label !== text) continue;
+                node.scrollIntoView({block: 'nearest', inline: 'nearest'});
                 const r = node.getBoundingClientRect();
                 if (r.width < 2 || r.height < 2) continue;
                 if (r.bottom < 0 || r.top > window.innerHeight) continue;
@@ -1088,8 +1094,13 @@ def _mouse_click_locator(page: Any, locator: Any) -> bool:
     """Trusted click at the element's center.
 
     Workday's prompt rows ignore element.click() (untrusted) and time out a
-    normal Playwright click, but a mouse click on the row lands.
+    normal Playwright click, but a mouse click on the row lands. The last
+    listbox option is often below the fold — scroll it into view first.
     """
+    try:
+        locator.scroll_into_view_if_needed(timeout=1500)
+    except Exception:
+        pass
     try:
         box = locator.bounding_box()
     except Exception:
@@ -1215,6 +1226,10 @@ def _click_option_substring(page: Any, terms: list[str]) -> bool:
     for opt, text in collected:
         if text != picked:
             continue
+        try:
+            opt.scroll_into_view_if_needed(timeout=1500)
+        except Exception:
+            pass
         if _mouse_click_locator(page, opt):
             return True
         if _mouse_click_prompt_text(page, picked):
@@ -1532,31 +1547,208 @@ def find_how_heard_control(page: Any) -> Any | None:
     return None
 
 
+def _how_heard_terms(profile: Profile) -> list[str]:
+    from apply_engine.fields import HOW_HEARD_CAREER_TERMS, HOW_HEARD_PRIMARY, value_candidates
+
+    primary = (profile.how_heard or "").strip() or HOW_HEARD_PRIMARY
+    return value_candidates("how_heard", primary, profile) or list(HOW_HEARD_CAREER_TERMS)
+
+
+def _multiselect_chips(control: Any) -> list[str]:
+    try:
+        chips = control.evaluate(
+            """e => {
+              const f = e.closest("[data-automation-id*='formField']") || e.parentElement;
+              return Array.from(f.querySelectorAll(
+                "[data-automation-id='selectedItem'], [data-automation-id='selectedItemList'] li"
+              )).map(x => (x.innerText || '').trim()).filter(Boolean);
+            }"""
+        )
+    except Exception:
+        return []
+    return [str(c) for c in chips or [] if str(c).strip()]
+
+
+def _is_multiselect_control(control: Any) -> bool:
+    try:
+        return bool(
+            control.evaluate(
+                """e => {
+                  const f = e.closest("[data-automation-id*='formField']") || e.parentElement;
+                  return !!(
+                    f.querySelector("[data-automation-id='multiselectInputContainer'], [data-uxi-widget-type='multiselect'], [data-automation-id='multiSelectContainer']")
+                    || (e.getAttribute && /selectinput|multiselect/i.test(e.getAttribute('data-uxi-widget-type') || ''))
+                  );
+                }"""
+            )
+        )
+    except Exception:
+        return False
+
+
+HOW_HEARD_OPTION_SEL = "[data-automation-id='promptOption'], [data-automation-id='menuItem']"
+
+
+def _visible_how_heard_options(page: Any) -> list[tuple[Any, str]]:
+    loc = page.locator(HOW_HEARD_OPTION_SEL)
+    seen: set[str] = set()
+    out: list[tuple[Any, str]] = []
+    try:
+        n = loc.count()
+    except Exception:
+        return []
+    for i in range(n):
+        opt = loc.nth(i)
+        try:
+            if not opt.is_visible():
+                continue
+            text = (opt.inner_text() or "").strip()
+        except Exception:
+            continue
+        if text and text not in seen and "(+1)" not in text:
+            seen.add(text)
+            out.append((opt, text))
+    return out
+
+
+def _pick_how_heard_option(opts: list[tuple[Any, str]], terms: list[str]) -> tuple[Any, str] | None:
+    for term in terms:
+        low = term.lower()
+        for opt, text in opts:
+            if low in text.lower():
+                return opt, text
+    for opt, text in opts:
+        if re.search(r"website|career site|careers? page|company site", text, re.I):
+            return opt, text
+    return None
+
+
+def _walk_how_heard_multiselect(page: Any, control: Any, terms: list[str], notes: list) -> list[str]:
+    """Hierarchical Workday multiselect: open, walk a category, click a leaf, verify chip."""
+    log: list = []
+    forced = [x.strip() for x in os.environ.get("WD_HOW_HEARD_PATH", "").split(">") if x.strip()]
+
+    def click_opt(opt: Any) -> bool:
+        try:
+            opt.scroll_into_view_if_needed(timeout=1500)
+        except Exception:
+            pass
+        if _mouse_click_locator(page, opt):
+            return True
+        try:
+            opt.click(timeout=3000)
+            return True
+        except Exception:
+            return False
+
+    try:
+        control.scroll_into_view_if_needed()
+        control.click(timeout=3000)
+        _settle(page, 800)
+        top = _visible_how_heard_options(page)
+        log.append(("top", [t for _, t in top]))
+        if forced:
+            for step in forced:
+                o = page.locator(HOW_HEARD_OPTION_SEL).filter(
+                    has_text=re.compile(r"^\s*" + re.escape(step) + r"\s*$")
+                ).first
+                click_opt(o)
+                _settle(page, 800)
+                log.append(("forced", step))
+            page.keyboard.press("Escape")
+            _settle(page, 300)
+            notes.append(f"how_heard multiselect walk: {log}")
+            return _multiselect_chips(control)
+        hit = _pick_how_heard_option(top, terms)
+        if hit is None:
+            cats = sorted(top, key=lambda x: 0 if re.search(r"direct|website|career|company|online", x[1], re.I) else 1)
+            for _o, cat in cats:
+                o = page.locator(HOW_HEARD_OPTION_SEL).filter(
+                    has_text=re.compile(r"^\s*" + re.escape(cat) + r"\s*$")
+                ).first
+                try:
+                    vis = o.is_visible()
+                except Exception:
+                    vis = False
+                if not vis:
+                    page.keyboard.press("Escape")
+                    _settle(page, 400)
+                    control.click(timeout=3000)
+                    _settle(page, 800)
+                if not click_opt(o):
+                    log.append((cat, "click failed"))
+                    continue
+                _settle(page, 800)
+                kids = _visible_how_heard_options(page)
+                log.append((cat, [k for _, k in kids]))
+                hit = _pick_how_heard_option(kids, terms)
+                if hit:
+                    break
+                back = page.locator("[data-automation-id='backButton'], [aria-label*='Back' i]")
+                if back.count():
+                    back.first.click(timeout=2000)
+                    _settle(page, 600)
+        if hit:
+            o, t = hit
+            click_opt(o)
+            _settle(page, 800)
+            log.append(("clicked", t))
+            if not _multiselect_chips(control):
+                cb = o.locator("input[type=checkbox], [role=checkbox]")
+                if cb.count():
+                    cb.first.click(force=True)
+                    _settle(page, 500)
+        page.keyboard.press("Escape")
+        _settle(page, 300)
+    except Exception as exc:
+        log.append(("err", f"{exc}"[:120]))
+    notes.append(f"how_heard multiselect walk: {log}")
+    return _multiselect_chips(control)
+
+
 def _fill_how_heard(page: Any, profile: Profile, filled: list, skipped: list, notes: list) -> None:
-    """How Did You Hear About Us? is required on some tenants (Walmart)."""
-    value = (profile.how_heard or "").strip()
+    """How Did You Hear About Us? Tenants spell Company Website differently; some use a hierarchical multiselect."""
+    terms = _how_heard_terms(profile)
     control = find_how_heard_control(page)
     if control is None:
         return
-    if not value:
+    if not terms:
         skipped.append({"label": "How Did You Hear About Us?*", "reason": "no profile value — never invent"})
         return
+    if _is_multiselect_control(control):
+        chips = _multiselect_chips(control)
+        if not chips:
+            chips = _walk_how_heard_multiselect(page, control, terms, notes)
+        if chips:
+            filled.append({
+                "label": "How Did You Hear About Us?",
+                "mapped_to": "how_heard",
+                "value": "; ".join(chips),
+                "method": "wd-howheard-multiselect",
+            })
+        else:
+            skipped.append({"label": "How Did You Hear About Us?*", "reason": "multiselect: no chip committed"})
+        return
     current = widget_readback(control)
-    if readback_committed(current, [value]):
+    if readback_committed(current, terms):
         filled.append({"label": "How Did You Hear About Us?", "mapped_to": "how_heard",
                        "value": current, "method": "workday-already-set"})
         return
-    readback = select_prompt(
-        page, control, [value],
-        readback_fn=lambda c=control: widget_readback(c),
-        close_outside=True,
-    )
-    if not readback_committed(readback, [value]):
-        skipped.append({"label": "How Did You Hear About Us?*",
-                        "reason": f"readback {readback!r} is not {value!r}", "readback": readback})
-        return
-    filled.append({"label": "How Did You Hear About Us?", "mapped_to": "how_heard",
-                   "value": readback, "method": "workday-prompt-readback"})
+    for term in terms:
+        readback = select_prompt(
+            page, control, [term],
+            readback_fn=lambda c=control: widget_readback(c),
+            close_outside=True,
+        )
+        if readback_committed(readback, [term]):
+            filled.append({"label": "How Did You Hear About Us?", "mapped_to": "how_heard",
+                           "value": readback, "method": "wd-howheard-synonym"})
+            return
+    skipped.append({
+        "label": "How Did You Hear About Us?*",
+        "reason": f"no synonym stuck; tried {terms[:8]!r}",
+        "readback": widget_readback(control),
+    })
 
 
 PHONE_DEVICE_AIDS = (
@@ -1714,13 +1906,20 @@ def _fill_state_then_postal(page: Any, profile: Profile, filled: list, skipped: 
     )
 
 
+PREV_EMPLOYEE_RE = re.compile(
+    r"previously (worked|employed)|previous employee|"
+    r"(?:former|current) (?!or former government)(?!government).{0,40}employee|"
+    r"ever been an? (?!government).{0,40}employee|"
+    r"worked (for|at) .{0,30}before",
+    re.I,
+)
+
+
 def _fill_previous_employee_no(page: Any, profile: Profile, filled: list, skipped: list) -> None:
     if profile.previous_employee:
         skipped.append({"label": "previous_employee", "reason": "profile says yes — not auto-filled"})
         return
-    field = page.locator("[data-automation-id*='formField']").filter(
-        has_text=re.compile(r"previously (worked|employed)|previous employee", re.I)
-    )
+    field = page.locator("[data-automation-id*='formField']").filter(has_text=PREV_EMPLOYEE_RE)
     if not field.count():
         field = page.locator('[data-automation-id*="previouslyWorked"], [data-automation-id*="previousEmployee"]')
     if not field.count():
@@ -1740,8 +1939,16 @@ def _fill_previous_employee_no(page: Any, profile: Profile, filled: list, skippe
                 "el => (el.labels && el.labels[0] && el.labels[0].innerText || el.getAttribute('aria-label') || el.value || '').trim()"
             )
             blob = f"{name} {label}"
-            if re.search(r"\bno\b", blob, re.I):
-                radio.check(timeout=3000)
+            if re.fullmatch(r"\s*no\s*", blob, re.I) or re.search(r"\bno\b", blob, re.I):
+                try:
+                    radio.check(timeout=2000, force=True)
+                except Exception:
+                    try:
+                        radio.evaluate(
+                            "el => (el.labels && el.labels[0] ? el.labels[0] : el).click()"
+                        )
+                    except Exception:
+                        continue
                 picked = True
                 break
         except Exception:
@@ -2613,13 +2820,15 @@ def _date_committed(
         return False
     if display is not None:
         month, shown_day, year = display
-        if not _date_value_ok(month, str(when.get("month_num") or "")):
+        if when.get("month_num") and not _date_value_ok(month, str(when.get("month_num") or "")):
             return False
         if day and not _date_value_ok(shown_day, day):
             return False
         if when.get("year") and not _date_value_ok(year, str(when["year"])):
             return False
         return True
+    if not (month_id or day_id or year_id):
+        return False
     return _date_parts_match(page, month_id, day_id, year_id, when, day)
 
 
@@ -2733,11 +2942,15 @@ def _set_date_inputs(page: Any, month_id: str, day_id: str, year_id: str, when: 
 
 
 def _type_date_displays(page: Any, field: Any, when: dict[str, str], day: str) -> None:
-    """Type into the visible month/day/year segments, then leave the field."""
+    """Type each visible month/day/year segment on its own. Never concatenate MMYYYY.
+
+    A year typed while the month spinbutton still has focus is how every month
+    collapsed to February: the leading 2 of 2024 landed in the month box.
+    """
     segments = (
-        ("dateSectionMonth-display", str(when.get("month_num") or "")),
-        ("dateSectionDay-display", day),
-        ("dateSectionYear-display", str(when.get("year") or "")),
+        ("dateSectionMonth-display", str(when.get("month_num") or "")[:2]),
+        ("dateSectionDay-display", day[:2] if day else ""),
+        ("dateSectionYear-display", str(when.get("year") or "")[:4]),
     )
     for aid, value in segments:
         if not value:
@@ -2751,7 +2964,8 @@ def _type_date_displays(page: Any, field: Any, when: dict[str, str], day: str) -
                   target.scrollIntoView({block: 'center', inline: 'nearest'});
                   const r = target.getBoundingClientRect();
                   if (r.width < 2 || r.height < 2) return null;
-                  return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+                  target.focus && target.focus();
+                  return {x: r.x + r.width / 2, y: r.y + r.height / 2, aid};
                 }""",
                 aid,
             )
@@ -2761,15 +2975,19 @@ def _type_date_displays(page: Any, field: Any, when: dict[str, str], day: str) -
             continue
         try:
             page.mouse.click(point["x"], point["y"])
+            _settle(page, 40)
             page.keyboard.press("Control+A")
+            page.keyboard.press("Backspace")
             page.keyboard.type(value, delay=50)
+            page.keyboard.press("Tab")
         except Exception:
             continue
+        _settle(page, 80)
     try:
         page.keyboard.press("Tab")
     except Exception:
         pass
-    _settle(page, 250)
+    _settle(page, 150)
 
 
 def _fill_proposed_start_date(
@@ -2803,13 +3021,16 @@ def _fill_proposed_start_date(
         })
         return
     if not _write_date_parts(page, field, when, day=when["day"]):
-        ids = _date_input_ids(field)
-        skipped.append({
-            "label": label or "Proposed Start Date",
-            "reason": f"{when['season']} start date did not stick",
-            "inputs": ids[:8],
-        })
-        return
+        from apply_engine.workday_experience import _fill_date_field
+
+        if not _fill_date_field(field, when):
+            ids = _date_input_ids(field)
+            skipped.append({
+                "label": label or "Proposed Start Date",
+                "reason": f"{when['season']} start date did not stick",
+                "inputs": ids[:8],
+            })
+            return
     filled.append({
         "label": label or "Proposed Start Date",
         "mapped_to": "season_start",
@@ -2848,6 +3069,16 @@ def _fill_college_end_date(page: Any, profile: Profile, filled: list, skipped: l
     label = " ".join(text.split())[:120]
     day = "15" if when.get("month_num") else ""
     if _write_date_parts(page, field, when, day=day):
+        filled.append({
+            "label": label or "college enrollment end",
+            "mapped_to": "graduation",
+            "value": f"{when.get('month_name') or when.get('month_num')} {day}, {when.get('year')}".strip(),
+            "method": "workday-question-date",
+        })
+        return
+    from apply_engine.workday_experience import _fill_date_field
+
+    if _fill_date_field(field, when):
         filled.append({
             "label": label or "college enrollment end",
             "mapped_to": "graduation",
@@ -2900,6 +3131,10 @@ def _fill_no_relatives(page: Any, profile: Profile, filled: list, skipped: list)
     writes = (
         (re.compile(r"relatives currently employed|name\(s\) of any relatives", re.I), "None", "family_at_employer"),
         (re.compile(r"plans after graduation", re.I), "Full-time employment", "plans_after_graduation"),
+        (re.compile(
+            r"currently employed by the government|government.?ethics|audit (firm|client)|non-?compet",
+            re.I,
+        ), "N/A", "government_ethics_detail"),
     )
     for item in found or []:
         question = str(item.get("question") or "")
@@ -3069,6 +3304,16 @@ def application_question_answers(profile: Profile) -> list[tuple[re.Pattern, str
         _yes_no_terms(profile.work_authorized_us),
     )
     add(
+        r"current or former government employee|"
+        r"current or former (federal|state|local).{0,40}employee|"
+        r"former government (employee|official)|government employee",
+        "government_employee",
+        _yes_no_terms(
+            _extra_bool(profile, "government_employee", default=False)
+            or _extra_bool(profile, "government_official", default=False)
+        ),
+    )
+    add(
         r"minimum qualification|certify you meet",
         "meets_qualifications",
         ["Yes"],
@@ -3091,7 +3336,10 @@ def application_question_answers(profile: Profile) -> list[tuple[re.Pattern, str
             r"associate status|walmart associate|sam'?s club associate|"
             r"current(ly)? (a |an )?(walmart |sam'?s )?associate|"
             r"previously (worked|employed)|former associate|"
-            r"internship or co-op|previously had an internship",
+            r"internship or co-op|previously had an internship|"
+            r"have you (ever )?(worked|been employed) (for|by)|"
+            r"worked for .{0,40}(subsidiary|affiliate|in the past)|"
+            r"former (?!government).{0,40}employee",
             "previous_employee",
             [
                 "I am not a current or former",
@@ -3141,9 +3389,29 @@ def application_question_answers(profile: Profile) -> list[tuple[re.Pattern, str
     # and extra.military_spouse. These were the questions still on Select One
     # after the profile-backed Yes/No answers were committed.
     add(
-        r"family member|direct family|relative who",
+        r"family member|direct family|relative who|"
+        r"closely related|related to (an?|any) (current )?employee|related employee",
         "family_at_employer",
-        _yes_no_terms(_extra_bool(profile, "family_at_employer", default=False)),
+        _yes_no_terms(
+            _extra_bool(profile, "family_at_employer", default=False)
+            or _extra_bool(profile, "related_to_employee", default=False)
+        ),
+    )
+    add(
+        r"conflict of interest",
+        "conflict_of_interest",
+        _yes_no_terms(_extra_bool(profile, "conflict_of_interest", default=False)),
+    )
+    add(
+        r"continuing employment restrictions|non-?compet|non-?solicitation",
+        "non_compete",
+        _yes_no_terms(_extra_bool(profile, "non_compete", default=False)),
+    )
+    add(
+        r"if you are currently employed by the government|government.?ethics|"
+        r"auditor|audit (firm|client)|independen(ce|t) audit",
+        "government_ethics_detail",
+        ["N/A", "Not Applicable", "Not applicable", "NA", "No"],
     )
     add(
         r"spouse/partner of someone|uniformed services",
@@ -3164,18 +3432,51 @@ def application_question_answers(profile: Profile) -> list[tuple[re.Pattern, str
     )
     eeo = profile.eeo
     add(r"\bgender\b", "gender", [eeo.gender] if eeo.gender else None)
-    add(r"hispanic|latino", "hispanic_latino", ["No"])
+    add(
+        r"hispanic|latino",
+        "hispanic_latino",
+        _yes_no_terms(_extra_bool(profile, "hispanic_latino", default=False)),
+    )
     add(r"race|ethnicity", "race_ethnicity", _race_terms(eeo.race_ethnicity))
     add(r"\bveteran\b", "veteran", _veteran_terms(eeo.veteran))
     add(r"\bdisability\b", "disability", [eeo.disability] if eeo.disability else None)
     return rules
 
 
+_RACE_LIST_MARKERS = (
+    "white",
+    "asian",
+    "african american",
+    "black or african",
+    "american indian",
+    "alaska native",
+    "two or more races",
+    "native hawaiian",
+    "pacific islander",
+)
+
+
+def looks_like_race_list(text: str) -> bool:
+    """True when Hispanic/Latino is a race checkbox, not its own Yes/No question."""
+    low = (text or "").lower()
+    hits = sum(1 for marker in _RACE_LIST_MARKERS if marker in low)
+    if hits >= 2:
+        return True
+    if hits >= 1 and re.search(r"hispanic|latino", low) and re.search(
+        r"\brace\b|ethnicity|select all that apply", low
+    ):
+        return True
+    return bool(re.search(r"select all that apply", low) and re.search(r"\brace\b|ethnicity|hispanic|latino", low))
+
+
 def match_application_question(text: str, profile: Profile) -> tuple[str, list[str]] | None:
     blob = text or ""
     for pattern, key, terms in application_question_answers(profile):
-        if pattern.search(blob):
-            return key, terms
+        if not pattern.search(blob):
+            continue
+        if key == "hispanic_latino" and looks_like_race_list(blob):
+            continue
+        return key, terms
     return None
 
 
@@ -3261,6 +3562,107 @@ def _prompt_by_label(page: Any, pattern: re.Pattern) -> Any | None:
     except Exception:
         return None
     return None
+
+
+def _set_race_checkboxes(page: Any, field: Any, terms: list[str]) -> str:
+    """Check exactly the profile race. Uncheck Hispanic/Latino and every other race box."""
+    try:
+        rows = field.evaluate(
+            """(el, terms) => {
+              const clean = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+              const wants = terms.map(t => clean(t).toLowerCase()).filter(Boolean);
+              const wanted = (low) => wants.some(want =>
+                low === want || low.startsWith(want + ' ') || low.startsWith(want + '(')
+              );
+              const boxes = [...el.querySelectorAll('input[type="checkbox"]')];
+              return boxes.map((box) => {
+                let label = '';
+                let lab = null;
+                if (box.id) {
+                  lab = [...el.ownerDocument.querySelectorAll('label')].find(node => node.htmlFor === box.id);
+                  if (lab) label = clean(lab.innerText);
+                }
+                if (!label && box.closest('label')) {
+                  lab = box.closest('label');
+                  label = clean(lab.innerText);
+                }
+                const target = lab || box;
+                target.scrollIntoView({block: 'center', inline: 'nearest'});
+                const r = target.getBoundingClientRect();
+                const low = label.toLowerCase();
+                return {
+                  id: box.id || '',
+                  label,
+                  checked: !!box.checked,
+                  wanted: wanted(low),
+                  x: r.x + Math.min(12, r.width / 2),
+                  y: r.y + r.height / 2,
+                  w: r.width,
+                  h: r.height,
+                };
+              });
+            }""",
+            terms,
+        )
+    except Exception:
+        return ""
+    picked = ""
+    for row in rows or []:
+        should = bool(row.get("wanted"))
+        already = bool(row.get("checked"))
+        if should:
+            picked = str(row.get("label") or picked)
+        if should == already:
+            continue
+        if float(row.get("w") or 0) < 2 or float(row.get("h") or 0) < 2:
+            continue
+        try:
+            page.mouse.click(row["x"], row["y"])
+        except Exception:
+            box_id = str(row.get("id") or "")
+            if not box_id:
+                continue
+            try:
+                loc = page.locator(f'[id="{box_id}"]')
+                if should:
+                    loc.check(force=True, timeout=1500)
+                else:
+                    loc.uncheck(force=True, timeout=1500)
+            except Exception:
+                continue
+        _settle(page, 120)
+    if not picked:
+        return ""
+    try:
+        checked = field.evaluate(
+            """(el, want) => {
+              const clean = (s) => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+              const boxes = [...el.querySelectorAll('input[type="checkbox"]')];
+              const on = [];
+              for (const box of boxes) {
+                if (!box.checked) continue;
+                let label = '';
+                if (box.id) {
+                  const lab = [...el.ownerDocument.querySelectorAll('label')].find(node => node.htmlFor === box.id);
+                  if (lab) label = clean(lab.innerText);
+                }
+                if (!label && box.closest('label')) label = clean(box.closest('label').innerText);
+                on.push(label);
+              }
+              return on;
+            }""",
+            picked,
+        )
+    except Exception:
+        checked = []
+    on = [str(item) for item in (checked or []) if str(item).strip()]
+    want = picked.strip().lower()
+    extras = [item for item in on if item != want and not item.startswith(want + " ") and not item.startswith(want + "(")]
+    if extras:
+        return ""
+    if want not in on and not any(item.startswith(want) for item in on):
+        return ""
+    return picked
 
 
 def _check_box_phrase(page: Any, field: Any, terms: list[str]) -> str:
@@ -3493,15 +3895,22 @@ def _fill_application_questions(page: Any, profile: Profile, filled: list, skipp
         if re.search(r"errors found", text, re.I):
             continue
         if key == "race_ethnicity":
-            checked = _check_box_phrase(page, field, terms) or _check_box_phrase(page, page.locator("body"), terms)
-            if checked:
-                filled.append({
-                    "label": " ".join(text.split())[:120] or key,
-                    "mapped_to": key,
-                    "value": checked,
-                    "method": "workday-checkbox",
-                })
-                continue
+            try:
+                box_count = field.locator('input[type="checkbox"]').count()
+            except Exception:
+                box_count = 0
+            if box_count:
+                checked = _set_race_checkboxes(page, field, terms)
+                if checked:
+                    filled.append({
+                        "label": " ".join(text.split())[:120] or key,
+                        "mapped_to": key,
+                        "value": checked,
+                        "method": "workday-checkbox",
+                    })
+                    continue
+        if key == "hispanic_latino" and looks_like_race_list(text):
+            continue
         if key == "plans_after_graduation":
             labeled = _control_after_label(
                 page,
@@ -3547,6 +3956,11 @@ def _fill_application_questions(page: Any, profile: Profile, filled: list, skipp
                         "method": "workday-application-question",
                     })
                     continue
+        try:
+            if field.get_by_role("radio").count():
+                continue
+        except Exception:
+            pass
         widget = _visible_prompt(field) or _prompt_by_label(page, _pattern_for(profile, key))
         if widget is None:
             skipped.append({"label": key, "reason": "no select in formField"})
@@ -3625,64 +4039,107 @@ def _fill_application_questions(page: Any, profile: Profile, filled: list, skipp
 
 
 TERMS_CONSENT_RE = re.compile(
-    r"terms and conditions|i have read and consent|acceptterms",
+    r"terms and conditions|i have read and consent|acceptterms|"
+    r"i understand this privacy statement|privacy statement",
     re.I,
 )
 
 
+def _checkbox_consent_blob(box: Any) -> str:
+    try:
+        name = box.get_attribute("name") or ""
+        element_id = box.get_attribute("id") or ""
+        label = box.evaluate(
+            """el => {
+              const own = el.getAttribute('aria-label') || '';
+              if (own) return own;
+              if (el.id) {
+                const lab = el.ownerDocument.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+                if (lab) return lab.innerText || '';
+              }
+              const wrap = el.closest('label');
+              return (wrap && wrap.innerText) || '';
+            }"""
+        )
+    except Exception:
+        return ""
+    return f"{label} {name} {element_id}"
+
+
+def _ensure_box_checked(page: Any, box: Any) -> bool:
+    """Check a box and confirm it on readback. Label click is what Workday honors."""
+    try:
+        if box.is_checked():
+            return True
+    except Exception:
+        pass
+    try:
+        box.check(timeout=2000, force=True)
+        if box.is_checked():
+            return True
+    except Exception:
+        pass
+    try:
+        box.evaluate(
+            """el => {
+              const lab = el.id && el.ownerDocument.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+              const target = lab || el.closest('label') || el;
+              target.click();
+            }"""
+        )
+    except Exception:
+        try:
+            box.click(force=True, timeout=2000)
+        except Exception:
+            return False
+    _settle(page, 80)
+    try:
+        return bool(box.is_checked())
+    except Exception:
+        return False
+
+
 def _check_terms_consent(page: Any, filled: list, skipped: list) -> None:
-    """Check the required Terms and Conditions box. Do not touch other checkboxes."""
+    """Check every required terms/privacy box and confirm each stays checked."""
     boxes = page.locator("input[type=checkbox]")
     try:
         count = boxes.count()
     except Exception:
         return
+    matched = 0
+    stuck = 0
     for i in range(count):
         box = boxes.nth(i)
-        try:
-            if not box.is_visible():
-                continue
-            name = box.get_attribute("name") or ""
-            element_id = box.get_attribute("id") or ""
-            label = box.evaluate(
-                """el => {
-                  const own = el.getAttribute('aria-label') || '';
-                  if (own) return own;
-                  if (el.id) {
-                    const lab = el.ownerDocument.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-                    if (lab) return lab.innerText || '';
-                  }
-                  const wrap = el.closest('label');
-                  return (wrap && wrap.innerText) || '';
-                }"""
-            )
-        except Exception:
-            continue
-        blob = f"{label} {name} {element_id}"
+        blob = _checkbox_consent_blob(box)
         if not TERMS_CONSENT_RE.search(blob):
             continue
         try:
-            if box.is_checked():
-                filled.append({
-                    "label": "Terms and Conditions",
-                    "mapped_to": "policy_ack",
-                    "value": "Yes",
-                    "method": "workday-terms-already",
-                })
-                return
-            box.check(timeout=3000)
-            if box.is_checked():
-                filled.append({
-                    "label": "Terms and Conditions",
-                    "mapped_to": "policy_ack",
-                    "value": "Yes",
-                    "method": "workday-terms",
-                })
-            else:
-                skipped.append({"label": "Terms and Conditions*", "reason": "checkbox did not stay checked"})
-        except Exception as exc:
-            skipped.append({"label": "Terms and Conditions*", "reason": f"check failed: {exc}"[:120]})
+            visible = box.is_visible()
+        except Exception:
+            visible = False
+        if not visible:
+            try:
+                box.evaluate("el => el.scrollIntoView({block: 'center'})")
+            except Exception:
+                pass
+        matched += 1
+        if _ensure_box_checked(page, box):
+            stuck += 1
+        else:
+            skipped.append({"label": "Terms and Conditions*", "reason": "checkbox did not stay checked"})
+    if not matched:
         return
+    if stuck:
+        if not any(row.get("mapped_to") == "policy_ack" for row in filled):
+            filled.append({
+                "label": "Terms and Conditions",
+                "mapped_to": "policy_ack",
+                "value": "Yes",
+                "method": "workday-terms",
+            })
+        return
+    if not any(row.get("label") == "Terms and Conditions*" for row in skipped):
+        skipped.append({"label": "Terms and Conditions*", "reason": "checkbox did not stay checked"})
 
 
 def _on_my_experience(page: Any) -> bool:

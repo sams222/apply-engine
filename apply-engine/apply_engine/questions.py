@@ -223,12 +223,18 @@ _HOW_HEARD_COMPANY_RE = re.compile(
 
 
 def _how_heard_score(option: str) -> int:
-    """Higher is better. Company Website / Career Site beat Relish Careers."""
+    """Higher is better. Company/Corporate Website beat a generic Career Site."""
     low = norm(option)
     if _HOW_HEARD_BOARD_RE.search(low):
         return 0
-    if re.search(r"company website|company career site|^career site$|^careers page$", low):
+    if re.search(
+        r"company website|corporate website|company career site|"
+        r"company careers (page|site|website)|employer website",
+        low,
+    ):
         return 4
+    if re.search(r"^career site$|^careers page$|^careers site$|^career page$|^career website$", low):
+        return 3
     if _HOW_HEARD_COMPANY_RE.search(low):
         return 3
     if re.search(r"\bwebsite\b", low):
@@ -526,7 +532,11 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
     # must answer Yes/No, not type the graduation month.
     add(r"graduat.{0,40}between|between .{0,40}graduat",
         lambda q, p, c: _grad_window_want(p, q))
-    add(r"(expected )?graduation (date|year|month|term)|when (will|do) you (expect to )?graduate|expected (grad|completion)|grad(uation)? (date|year)|class of",
+    add(r"(expected )?graduation (date|year|month|term)|"
+        r"(expected |anticipated )?(date|month|year|term) of graduation|"
+        r"when (will|do) you (expect to )?graduate|"
+        r"expected (grad|completion)|"
+        r"grad(uation)? (date|year)|class of",
         lambda q, p, c: _graduation_want(p, q))
     add(r"\bgpa\b|grade point", lambda q, p, c: Want(key="gpa", text=p.gpa, terms=_gpa_terms(p.gpa)) if p.gpa else None)
     add(r"(when did you|date you|when you) (begin|start|began|started|enroll).{0,60}(degree|program|studies|school|college|university)",

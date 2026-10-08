@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from apply_engine.models import Profile
 from apply_engine.util import normalize_label
@@ -144,17 +145,52 @@ def is_honeypot(
 HOW_HEARD_PRIMARY = "Company Website"
 HOW_HEARD_CAREER_TERMS = (
     "Company Website",
+    "Corporate Website",
     "Company Career Site",
+    "Company Careers Site",
+    "Company Careers Page",
+    "Company Web Site",
     "Careers Page",
     "Career Site",
+    "Careers Site",
     "Careers Website",
-    "Corporate Website",
+    "Career Website",
+    "Career Page",
     "Company Site",
     "Employer Website",
     "Organization Website",
     "Company Careers",
     "Website",
 )
+
+
+def profile_transcript_path(profile: Profile | None) -> str | None:
+    """Absolute path of a transcript file on the profile, if it exists on disk."""
+    if profile is None:
+        return None
+    extra = getattr(profile, "extra", None) or {}
+    for key in ("transcript_path", "transcript", "unofficial_transcript"):
+        raw = extra.get(key)
+        if not raw:
+            continue
+        path = Path(str(raw)).expanduser()
+        if path.is_file():
+            return str(path)
+    return None
+
+
+def file_input_kind(label: str = "", name: str = "", element_id: str = "") -> str:
+    """Classify a file input: resume, transcript, cover_letter, or other."""
+    blob = f"{label} {name} {element_id}".lower()
+    if "cover" in blob and "resume" not in blob and "cv" not in blob:
+        return "cover_letter"
+    if "transcript" in blob:
+        return "transcript"
+    if re.search(r"\b(resume|cv|curriculum vitae)\b", blob) or "systemfield_resume" in blob:
+        return "resume"
+    if not (label or "").strip():
+        return "resume"
+    return "other"
 
 
 def is_noise_field(label: str = "", name: str = "", element_id: str = "", placeholder: str = "") -> bool:

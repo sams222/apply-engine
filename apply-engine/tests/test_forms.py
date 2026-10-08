@@ -63,6 +63,22 @@ def test_essay_uses_llm_when_configured(page, monkeypatch):
     assert not any("needs_user" in n for n in notes)
 
 
+def test_essay_prompt_does_not_leak_sibling_questions():
+    from apply_engine.forms import essay_prompt
+
+    g = {
+        "label": "Why are you interested in this role?",
+        "context": (
+            "Why are you interested in this role? What is your expected date of graduation? "
+            "How did you hear about us? Are you willing to relocate? What are your pay expectations?"
+        ),
+    }
+    prompt = essay_prompt(g)
+    assert prompt == "Why are you interested in this role?"
+    assert "graduation" not in prompt.lower()
+    assert "relocate" not in prompt.lower()
+
+
 def test_saved_answers_are_reused_verbatim_and_never_redrafted(monkeypatch):
     from apply_engine import forms
 
