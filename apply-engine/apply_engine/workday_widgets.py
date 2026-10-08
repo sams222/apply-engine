@@ -853,10 +853,10 @@ def _open_list_options(page: Any) -> list[str]:
     return [str(item) for item in texts or []]
 
 
-def _commit_listed_choice(page: Any, control: Any, terms: list[str]) -> tuple[str, list[str]]:
+def _commit_listed_choice(page: Any, control: Any, terms: list[str], *, force: bool = False) -> tuple[str, list[str]]:
     """Open one dropdown and mouse-click the matching row. Do not Escape a committed choice."""
     current = choice_readback(control)
-    if readback_committed(current, terms):
+    if not force and readback_committed(current, terms):
         return current, []
     try:
         tag = str(control.evaluate("el => (el.tagName || '').toLowerCase()"))
@@ -1325,6 +1325,7 @@ def fill_workday_sticky_fields(
         _fill_degree_and_fos(page, profile, filled, skipped)
     _fill_application_questions(page, profile, filled, skipped)
     _fill_question_radios(page, profile, filled, skipped)
+    _fill_disability_self_id_block(page, profile, filled, skipped)
     _fill_proposed_start_date(page, job_title, job_text, filled, skipped)
     _fill_college_end_date(page, profile, filled, skipped)
     _fill_no_relatives(page, profile, filled, skipped)
@@ -1611,15 +1612,25 @@ def _visible_how_heard_options(page: Any) -> list[tuple[Any, str]]:
     return out
 
 
+def _how_heard_leaf_score(text: str) -> int:
+    """Leaves under a Corporate Careers Website folder: microsite/.jobs beat named boards."""
+    low = (text or "").strip().lower()
+    if re.search(r"microsite|\.jobs\b|jobs microsite", low):
+        return 5
+    from apply_engine.questions import _how_heard_score
+
+    return _how_heard_score(text)
+
+
 def _pick_how_heard_option(opts: list[tuple[Any, str]], terms: list[str]) -> tuple[Any, str] | None:
     for term in terms:
         low = term.lower()
         for opt, text in opts:
             if low in text.lower():
                 return opt, text
-    for opt, text in opts:
-        if re.search(r"website|career site|careers? page|company site", text, re.I):
-            return opt, text
+    ranked = sorted(opts, key=lambda row: -_how_heard_leaf_score(row[1]))
+    if ranked and _how_heard_leaf_score(ranked[0][1]) > 0:
+        return ranked[0]
     return None
 
 
@@ -1694,6 +1705,16 @@ def _walk_how_heard_multiselect(page: Any, control: Any, terms: list[str], notes
             _settle(page, 800)
             log.append(("clicked", t))
             if not _multiselect_chips(control):
+                kids = _visible_how_heard_options(page)
+                kids = [(k, label) for k, label in kids if label.strip().lower() != t.strip().lower()]
+                leaf = _pick_how_heard_option(kids, terms) if kids else None
+                if leaf:
+                    lo, lt = leaf
+                    click_opt(lo)
+                    _settle(page, 800)
+                    log.append(("leaf", lt))
+                    o, t = lo, lt
+            if not _multiselect_chips(control):
                 cb = o.locator("input[type=checkbox], [role=checkbox]")
                 if cb.count():
                     cb.first.click(force=True)
@@ -1758,7 +1779,24 @@ PHONE_DEVICE_AIDS = (
     "phoneType",
     "phone-type",
 )
-PHONE_DEVICE_TERMS = ("Mobile Phone", "Mobile", "Cell Phone", "Cellular", "Cell")
+PHONE_DEVICE_TERMS = (
+    "Personal Mobile",
+    "Personal Cell",
+    "Personal Phone",
+    "Mobile Phone",
+    "Mobile",
+    "Cell Phone",
+    "Cellular",
+    "Cell",
+)
+PHONE_DEVICE_AVOID_RE = re.compile(r"\bbusiness\b|\bwork\b|\bland\s*line\b|\bfax\b", re.I)
+
+
+def _phone_device_committed(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw or PHONE_DEVICE_AVOID_RE.search(raw):
+        return False
+    return readback_committed(raw, PHONE_DEVICE_TERMS)
 
 
 def _fill_phone_device_type(page: Any, filled: list, skipped: list) -> None:
@@ -1788,7 +1826,7 @@ def _fill_phone_device_type(page: Any, filled: list, skipped: list) -> None:
     if control is None:
         return
     current = choice_readback(control)
-    if readback_committed(current, PHONE_DEVICE_TERMS):
+    if _phone_device_committed(current):
         filled.append({
             "label": "Phone Device Type",
             "mapped_to": "phone_device_type",
@@ -1796,8 +1834,13 @@ def _fill_phone_device_type(page: Any, filled: list, skipped: list) -> None:
             "method": "workday-phone-device",
         })
         return
-    readback, options = _commit_listed_choice(page, control, list(PHONE_DEVICE_TERMS))
-    if readback_committed(readback, PHONE_DEVICE_TERMS):
+    readback, options = _commit_listed_choice(
+        page,
+        control,
+        list(PHONE_DEVICE_TERMS),
+        force=bool(PHONE_DEVICE_AVOID_RE.search(current or "")),
+    )
+    if _phone_device_committed(readback):
         filled.append({
             "label": "Phone Device Type",
             "mapped_to": "phone_device_type",
@@ -1908,11 +1951,44 @@ def _fill_state_then_postal(page: Any, profile: Profile, filled: list, skipped: 
 
 PREV_EMPLOYEE_RE = re.compile(
     r"previously (worked|employed)|previous employee|"
+    r"previously worked for|"
     r"(?:former|current) (?!or former government)(?!government).{0,40}employee|"
     r"ever been an? (?!government).{0,40}employee|"
     r"worked (for|at) .{0,30}before",
     re.I,
 )
+
+
+def _click_styled_radio(radio: Any) -> bool:
+    """Workday radios often ignore input.check(); the visible label click sticks."""
+    try:
+        if radio.is_checked():
+            return True
+    except Exception:
+        pass
+    try:
+        radio.evaluate(
+            """el => {
+              const lab = (el.labels && el.labels[0]) || el.closest('label');
+              (lab || el).click();
+            }"""
+        )
+        try:
+            _settle(radio.page, 80)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        if radio.is_checked():
+            return True
+    except Exception:
+        pass
+    try:
+        radio.check(timeout=2000, force=True)
+        return bool(radio.is_checked())
+    except Exception:
+        return False
 
 
 def _fill_previous_employee_no(page: Any, profile: Profile, filled: list, skipped: list) -> None:
@@ -1940,15 +2016,8 @@ def _fill_previous_employee_no(page: Any, profile: Profile, filled: list, skippe
             )
             blob = f"{name} {label}"
             if re.fullmatch(r"\s*no\s*", blob, re.I) or re.search(r"\bno\b", blob, re.I):
-                try:
-                    radio.check(timeout=2000, force=True)
-                except Exception:
-                    try:
-                        radio.evaluate(
-                            "el => (el.labels && el.labels[0] ? el.labels[0] : el).click()"
-                        )
-                    except Exception:
-                        continue
+                if not _click_styled_radio(radio):
+                    continue
                 picked = True
                 break
         except Exception:
@@ -2239,10 +2308,14 @@ def _wait_for_prompt_leaves(page: Any, timeout_ms: int = 4000) -> bool:
 
 
 def field_of_study_committed(readback: str, term: str) -> bool:
-    """A longer major that merely contains the phrase is not this major."""
+    """True for the exact major or a table-driven synonym, not a longer compound."""
+    from apply_engine.fields import field_of_study_terms
+
     got = re.sub(r"\s+", " ", readback or "").strip().lower()
-    want = re.sub(r"\s+", " ", term or "").strip().lower()
-    return bool(want) and got == want
+    if not got:
+        return False
+    allowed = {re.sub(r"\s+", " ", t).strip().lower() for t in field_of_study_terms(term) if t.strip()}
+    return got in allowed
 
 
 def _clear_wrong_multiselect_chip(page: Any, control: Any, term: str, *, exact: bool = False) -> None:
@@ -2377,17 +2450,23 @@ def _commit_field_of_study(page: Any, control: Any, term: str, notes: list | Non
         if not left_folders:
             _note("fos: still on folders after All")
             return False
-    # Exact major only. "Computer Science" is a phrase inside
+    # Exact major or a synonym. "Computer Science" is a phrase inside
     # "Electrical Engineering and Computer Science", and that longer row is
     # not the degree.
+    from apply_engine.fields import field_of_study_terms
+
     _bring_prompt_list_into_view(page)
-    if not _prompt_has_exact_option(page, term):
-        _scroll_prompt_option_into_view(page, term)
-        _bring_prompt_list_into_view(page)
-    if not _prompt_has_exact_option(page, term):
+    picked = ""
+    for candidate in field_of_study_terms(term) or [term]:
+        if not _prompt_has_exact_option(page, candidate):
+            _scroll_prompt_option_into_view(page, candidate)
+            _bring_prompt_list_into_view(page)
+        if _prompt_has_exact_option(page, candidate):
+            picked = candidate
+            break
+    if not picked:
         _note("fos: exact option never mounted | " + " | ".join(_prompt_option_texts(page)[:4]))
         return False
-    picked = term
     if not _mouse_click_prompt_text(page, picked):
         _note("fos: major click missed")
         return False
@@ -2489,10 +2568,12 @@ def _fill_degree_and_fos(page: Any, profile: Profile, filled: list, skipped: lis
         # search widget (no open menu) may fall through to a generic prompt pick.
         menu_open = _prompt_panel_open(page)
         if not field_of_study_committed(readback, fos) and not menu_open:
+            from apply_engine.fields import field_of_study_terms
+
             readback = select_prompt(
                 page,
                 fos_loc,
-                [fos],
+                field_of_study_terms(fos) or [fos],
                 readback_fn=lambda c=fos_loc: widget_readback(c),
                 close_outside=False,
             )
@@ -2603,11 +2684,13 @@ def _veteran_terms(value: str | None) -> list[str] | None:
         return None
     terms = [raw]
     low = raw.lower()
-    if "not a protected veteran" in low or low in {"no", "not a veteran", "i am not a veteran"}:
+    if "not a protected veteran" in low or "not a veteran" in low or low in {"no", "i am not a veteran"}:
         terms.extend([
-            "I am NOT a veteran",
             "I am not a veteran",
+            "I am NOT a veteran",
             "I am not a protected veteran",
+            "Not a veteran",
+            "Not a Protected Veteran",
         ])
     return terms
 
@@ -2693,13 +2776,10 @@ def _fill_question_radios(page: Any, profile: Profile, filled: list, skipped: li
                 continue
             if not any(term.lower() in str(blob).lower() for term in terms):
                 continue
-            try:
-                if not radio.is_checked():
-                    radio.check(timeout=3000)
-                picked = " ".join(str(blob).split())
-                break
-            except Exception:
+            if not _click_styled_radio(radio):
                 continue
+            picked = " ".join(str(blob).split())
+            break
         label = " ".join(text.split())[:120]
         if not picked:
             skipped.append({"label": label or key, "reason": f"radio not found for {terms[0]!r}"})
@@ -2964,7 +3044,6 @@ def _type_date_displays(page: Any, field: Any, when: dict[str, str], day: str) -
                   target.scrollIntoView({block: 'center', inline: 'nearest'});
                   const r = target.getBoundingClientRect();
                   if (r.width < 2 || r.height < 2) return null;
-                  target.focus && target.focus();
                   return {x: r.x + r.width / 2, y: r.y + r.height / 2, aid};
                 }""",
                 aid,
@@ -3266,6 +3345,78 @@ def _clear_ungrounded_essays(page: Any) -> None:
             continue
 
 
+_DISABILITY_BLOCK_RE = re.compile(
+    r"disability|cc-?305|self-identif|voluntary disclosure",
+    re.I,
+)
+_CC305_NAME_RE = re.compile(r"^(your )?name\*?\s*$|printed name|name \(please", re.I)
+_CC305_DATE_RE = re.compile(r"^(today'?s )?date\*?\s*$|date signed|signature date", re.I)
+
+
+def _fill_disability_self_id_block(page: Any, profile: Profile, filled: list, skipped: list) -> None:
+    """CC-305 / disability self-ID asks for printed name and today's date."""
+    try:
+        body = page.inner_text("body") or ""
+    except Exception:
+        body = ""
+    if not _DISABILITY_BLOCK_RE.search(body):
+        return
+    name = (profile.full_name or "").strip()
+    today = date.today()
+    when = {
+        "month_num": f"{today.month:02d}",
+        "month_name": today.strftime("%B"),
+        "year": str(today.year),
+        "day": f"{today.day:02d}",
+    }
+    for field in _iter_leaf_form_fields(page):
+        try:
+            text = " ".join((field.inner_text() or "").split())
+            aid = field.get_attribute("data-automation-id") or ""
+        except Exception:
+            continue
+        if re.search(r"legalName|firstName|lastName|jobTitle|companyName", aid):
+            continue
+        if name and (
+            _CC305_NAME_RE.search(text.split(" ")[0] if text else "")
+            or re.match(r"name\b", text, re.I)
+        ) and not re.search(r"legal name|first name|last name|company name|school name", text, re.I):
+            wrote = _write_plain_into_field(field, name)
+            if wrote:
+                filled.append({
+                    "label": text[:80] or "Name",
+                    "mapped_to": "full_name",
+                    "value": wrote,
+                    "method": "workday-cc305-name",
+                })
+            continue
+        looks_date = bool(
+            _CC305_DATE_RE.search(text)
+            or re.match(r"date\b", text, re.I)
+            or re.search(r"cc-?305.*date|dateSection", aid, re.I)
+        )
+        if looks_date and not re.search(r"start date|end date|graduation|birth|first year|last year", text, re.I):
+            if _write_date_parts(page, field, when, day=when["day"]):
+                filled.append({
+                    "label": text[:80] or "Date",
+                    "mapped_to": "disability_self_id_date",
+                    "value": f"{when['month_num']}/{when['day']}/{when['year']}",
+                    "method": "workday-cc305-date",
+                })
+
+
+def _write_plain_into_field(field: Any, value: str) -> str:
+    loc = field.locator("input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea")
+    try:
+        if not loc.count():
+            return ""
+        el = loc.first
+        el.fill(value, timeout=3000)
+        return (el.input_value() or "").strip()
+    except Exception:
+        return ""
+
+
 def application_question_answers(profile: Profile) -> list[tuple[re.Pattern, str, list[str]]]:
     """Question-text rules for Workday Application Questions.
 
@@ -3338,6 +3489,7 @@ def application_question_answers(profile: Profile) -> list[tuple[re.Pattern, str
             r"previously (worked|employed)|former associate|"
             r"internship or co-op|previously had an internship|"
             r"have you (ever )?(worked|been employed) (for|by)|"
+            r"previously worked for|"
             r"worked for .{0,40}(subsidiary|affiliate|in the past)|"
             r"former (?!government).{0,40}employee",
             "previous_employee",

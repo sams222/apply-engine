@@ -21,7 +21,9 @@ Usage (from repo root):
   python3 scripts/hunt/test_priority_unresolved.py --live   # optional networked replay; does not apply
 
 Default --src is scripts/hunt/fixtures/hrt-miss-2026-10-06/ (synthetic reconstruction of the silent drop:
-public job titles/URLs only). Replays run in a temp dir (HUNT_ART, HUNT_NO_ROOT=1, HUNT_OFFLINE=1).
+public job titles/URLs only). Replays run in a temp dir (HUNT_ART, HUNT_NO_ROOT=1, HUNT_OFFLINE=1,
+HUNT_NOW=2026-10-06 13:20 UTC). HUNT_NO_ROOT ignores inherited HUNT_ROOT / skip-companies / prior
+apply_targets so a box that already listed Citadel cannot silently drop replay B.
 """
 from __future__ import annotations
 
@@ -50,6 +52,24 @@ UNRESOLVED_ROLE = "Software Engineer Intern – Summer 2027"
 UNRESOLVED_URL = "https://jobright.ai/jobs/info/citadel-swe-2027"
 RUN_NOW = datetime(2026, 10, 6, 13, 20, tzinfo=timezone.utc).timestamp()  # when the 9am hunt ran
 DEFAULT_SRC = HERE / "fixtures" / "hrt-miss-2026-10-06"
+
+
+def isolate_hunt_env(tmp: Path, *, slot: str, live: bool = False) -> None:
+    """Pin artifact dir, clock, and a private-tree firewall.
+
+    The 2pm hunt box exports HUNT_ROOT=/workspace/internship-apps (Citadel is already in
+    skip-companies / prior apply_targets). Replays must not inherit that, or replay B
+    drops Citadel while HRT still resolves. HUNT_NOW freezes age against fixture dates.
+    """
+    for key in ("HUNT_ROOT", "HUNT_ARTS"):
+        os.environ.pop(key, None)
+    os.environ.update(
+        HUNT_ART=str(tmp),
+        HUNT_NO_ROOT="1",
+        HUNT_OFFLINE="0" if live else "1",
+        HUNT_SLOT=slot,
+        HUNT_NOW=str(RUN_NOW),
+    )
 
 
 def fixture_fetcher(with_board=True):
@@ -92,12 +112,47 @@ def unit_tests(src):
     return card
 
 
+def isolation_from_private_root_tests():
+    """HUNT_NO_ROOT must ignore skip-companies / applied pairs on an inherited HUNT_ROOT.
+
+    Reproduces the box failure: unit/A pass (HRT recovers) but replay B drops Citadel
+    because /workspace/internship-apps/skip-companies.txt already lists it.
+    """
+    poison = Path(tempfile.mkdtemp(prefix="hunt-poison-root-"))
+    (poison / "skip-companies.txt").write_text("citadel\n")
+    (poison / "jobright-applied.json").write_text(json.dumps([
+        {"company": UNRESOLVED_FIRM, "role": UNRESOLVED_ROLE},
+    ]) + "\n")
+    arts = poison / "run-artifacts" / "2026-10-06-1am"
+    arts.mkdir(parents=True)
+    (arts / "hunt-2026-10-06-1am-deduped.json").write_text(json.dumps([
+        {"company": UNRESOLVED_FIRM, "role": UNRESOLVED_ROLE, "url": UNRESOLVED_URL, "skip_reason": None},
+    ]) + "\n")
+    tmp = Path(tempfile.mkdtemp(prefix="hunt-isolation-"))
+    os.environ["HUNT_ROOT"] = str(poison)
+    os.environ["HUNT_ARTS"] = str(poison / "run-artifacts")
+    isolate_hunt_env(tmp, slot="isolation")
+    # isolate_hunt_env pops HUNT_ROOT; re-export poison so a regression that *reads* it fails this test
+    os.environ["HUNT_ROOT"] = str(poison)
+    os.environ["HUNT_ARTS"] = str(poison / "run-artifacts")
+    os.environ["HUNT_NO_ROOT"] = "1"
+    os.environ["HUNT_ART"] = str(tmp)
+    os.environ["HUNT_NOW"] = str(RUN_NOW)
+    sys.modules.pop("run_hunt", None)
+    rh = importlib.import_module("run_hunt")
+    skipped = rh.load_skip_companies()
+    pairs = rh.load_applied_pairs()
+    assert rh.NO_ROOT and "citadel" not in skipped, skipped
+    assert (A.company_key(UNRESOLVED_FIRM), A.norm(UNRESOLVED_ROLE)) not in pairs, pairs
+    print("isolation OK: HUNT_NO_ROOT ignores skip-companies/applied Citadel on inherited HUNT_ROOT")
+
+
 def extra_behavior_tests():
     """gh_jid Greenhouse, no Jobright page-fetch, stale-at-ATS keep for Jobright-sourced priority firms."""
     careers_gh = f"https://www.hudsonrivertrading.com/careers/job/?gh_jid={ALGO_JID}"
     assert A.ats_of(careers_gh) == "greenhouse"
     tmp = Path(tempfile.mkdtemp(prefix="hunt-behavior-"))
-    os.environ.update(HUNT_ART=str(tmp), HUNT_NO_ROOT="1", HUNT_OFFLINE="0", HUNT_SLOT="behavior")
+    isolate_hunt_env(tmp, slot="behavior", live=True)  # live=True => HUNT_OFFLINE=0 for verify stubs
     sys.modules.pop("run_hunt", None)
     rh = importlib.import_module("run_hunt")
     assert rh.guess_ats(careers_gh) == "greenhouse"
@@ -152,7 +207,7 @@ def replay(src: Path, label: str, with_board: bool | None, keep_handled=False, l
             "swe_ai": True,
         })
         (tmp / "jobright-discovery.json").write_text(json.dumps(cards) + "\n")
-    os.environ.update(HUNT_ART=str(tmp), HUNT_NO_ROOT="1", HUNT_OFFLINE="0" if live else "1", HUNT_SLOT="2026-10-06-9am")
+    isolate_hunt_env(tmp, slot="2026-10-06-9am", live=live)
     A.set_fetcher(None if live else (fixture_fetcher(with_board) if with_board is not None else (lambda u: (0, ""))))
     sys.modules.pop("run_hunt", None)
     rh = importlib.import_module("run_hunt")
@@ -190,6 +245,7 @@ def main():
     if not src.exists():
         raise SystemExit(f"--src not found: {src} (bundled default is {DEFAULT_SRC})")
     extra_behavior_tests()
+    isolation_from_private_root_tests()
     unit_tests(src)
 
     before = json.loads(src_file(src, "hunt-2026-10-06-9am.json").read_text())

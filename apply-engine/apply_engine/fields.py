@@ -160,8 +160,50 @@ HOW_HEARD_CAREER_TERMS = (
     "Employer Website",
     "Organization Website",
     "Company Careers",
+    "Corporate Careers Website",
     "Website",
 )
+
+
+# Profile major -> tenant spellings. Longer compound majors (EECS) stay out.
+FIELD_OF_STUDY_SYNONYMS = (
+    (
+        ("computer science", "cs"),
+        (
+            "Computer Science",
+            "Computer and Information Science",
+            "Computer & Information Science",
+            "Computer Information Science",
+            "Computing and Information Science",
+            "CIS",
+        ),
+    ),
+)
+
+
+def field_of_study_terms(major: str) -> list[str]:
+    """Exact major first, then table-driven synonyms. Never EECS-style compounds."""
+    raw = re.sub(r"\s+", " ", (major or "").strip())
+    if not raw:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(item: str) -> None:
+        text = re.sub(r"\s+", " ", (item or "").strip())
+        key = text.lower()
+        if not text or key in seen:
+            return
+        seen.add(key)
+        out.append(text)
+
+    add(raw)
+    low = raw.lower()
+    for keys, syns in FIELD_OF_STUDY_SYNONYMS:
+        if low in keys:
+            for syn in syns:
+                add(syn)
+    return out
 
 
 def profile_transcript_path(profile: Profile | None) -> str | None:

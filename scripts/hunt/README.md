@@ -38,6 +38,6 @@ Optional networked replay (public Greenhouse / careers GETs only; still does not
 python3 scripts/hunt/test_priority_unresolved.py --live
 ```
 
-Exit 0 means all assertions passed. Replays use a temp dir (`HUNT_ART`, `HUNT_NO_ROOT=1`, `HUNT_OFFLINE=1`).
+Exit 0 means all assertions passed. Replays use a temp dir (`HUNT_ART`, `HUNT_NO_ROOT=1`, `HUNT_OFFLINE=1`, `HUNT_NOW` pinned to 2026-10-06 13:20 UTC). `HUNT_NO_ROOT=1` ignores `HUNT_ROOT` / `HUNT_ARTS` / the `/workspace/internship-apps` default so skip-companies and prior apply_targets cannot drop a fixture Citadel card.
 
-Private applicant files (`profile.json`, resumes, ledgers, `APPLY_LOG`, `do-not-retry.json`) are **not** used and must not be added here. Optional `HUNT_ROOT` / `HUNT_ARTS` may point at a local internship-apps tree when one exists.
+Private applicant files (`profile.json`, resumes, ledgers, `APPLY_LOG`, `do-not-retry.json`) are **not** used and must not be added here. Optional `HUNT_ROOT` / `HUNT_ARTS` may point at a local internship-apps tree when one exists (ignored when `HUNT_NO_ROOT=1`).
