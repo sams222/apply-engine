@@ -39,14 +39,24 @@ import ats_recover  # noqa: E402  (sibling helper; copy scripts/hunt/ats_recover
 
 # HUNT_ART=<dir> + HUNT_NO_ROOT=1 let you dry-run against a copy without touching private root files.
 # HUNT_ROOT / HUNT_ARTS point at an optional private internship-apps tree (absent in this public repo).
+# HUNT_NOW=<unix seconds> pins the age clock (offline replays); unset => time.time().
 _DEFAULT_ART = _HERE
 ART = Path(os.environ.get("HUNT_ART") or _DEFAULT_ART)
 NO_ROOT = os.environ.get("HUNT_NO_ROOT") == "1"
 SLOT = os.environ.get("HUNT_SLOT") or ART.name
 OFFLINE = os.environ.get("HUNT_OFFLINE") == "1"  # no network at all (regression tests)
-ROOT = Path(os.environ.get("HUNT_ROOT") or "/workspace/internship-apps")
-ARTS = Path(os.environ.get("HUNT_ARTS") or (ROOT / "run-artifacts"))
-NOW = time.time()
+if NO_ROOT:
+    # Must win over inherited HUNT_ROOT=/workspace/internship-apps (the 2pm hunt box exports
+    # that, and skip-companies there includes already-touched priority firms like Citadel).
+    ROOT = ART / "_no_root"
+    ARTS = ART / "_no_arts"
+else:
+    ROOT = Path(os.environ.get("HUNT_ROOT") or "/workspace/internship-apps")
+    ARTS = Path(os.environ.get("HUNT_ARTS") or (ROOT / "run-artifacts"))
+try:
+    NOW = float(os.environ["HUNT_NOW"]) if os.environ.get("HUNT_NOW") else time.time()
+except ValueError:
+    NOW = time.time()
 PREF_H = 24
 SOFT_H = 40  # soft ≤40h for apply-worthy
 HARD_H = 72  # note age-skipped for >40h ≤72h

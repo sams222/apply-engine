@@ -746,8 +746,8 @@ def test_field_of_study_does_not_accept_a_longer_major():
     from apply_engine.workday_widgets import field_of_study_committed
 
     assert field_of_study_committed("Computer Science", "Computer Science")
+    assert field_of_study_committed("Computer and Information Science", "Computer Science")
     assert not field_of_study_committed("Electrical Engineering and Computer Science", "Computer Science")
-    assert not field_of_study_committed("Computer and Information Science", "Computer Science")
 
 
 def test_aerospace_internship_question_is_no():

@@ -189,7 +189,8 @@ def fill_application(
     readback_problems: list = []
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=not headed)
+        headed_now = headed
+        browser = pw.chromium.launch(headless=not headed_now)
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         page.set_default_timeout(timeout_ms)
@@ -203,13 +204,40 @@ def fill_application(
                 if embed:
                     notes.append(f"greenhouse entry: company page -> {embed}")
                 page.goto(embed or url, wait_until="domcontentloaded")
+            ats = detect_ats(url, page.content() if not html else html)
+            if ats == ATS_WORKDAY and workday_waf_blocked(page) and should_retry_workday_headed(
+                headed=headed_now, waf=True
+            ):
+                notes.append("workday WAF security check on headless — retrying headed")
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+                headed_now = True
+                browser = pw.chromium.launch(headless=False)
+                context = browser.new_context(accept_downloads=True)
+                page = context.new_page()
+                page.set_default_timeout(timeout_ms)
+                if html:
+                    page.set_content(html, wait_until="domcontentloaded")
+                else:
+                    page.goto(embed or url, wait_until="domcontentloaded")
+            waf_parked = False
+            if ats == ATS_WORKDAY and workday_waf_blocked(page):
+                skipped.append({"label": "workday_entry", "reason": "WAF security check (HTTP 429)"})
+                notes.append(
+                    "needs_user: Workday Security Check (HTTP 429) blocked the browser; re-run --headed"
+                )
+                waf_parked = True
             page.wait_for_timeout(1200)
             ats = detect_ats(url, page.content())
             _maybe_dismiss(page)
             page.wait_for_timeout(400)
 
             ashby_ready = True
-            if ats == ATS_WORKDAY:
+            if ats == ATS_WORKDAY and waf_parked:
+                pass
+            elif ats == ATS_WORKDAY:
                 from apply_engine.workday import require_password, workday_email
 
                 wd_email = workday_email(profile)
@@ -921,7 +949,40 @@ def _advance_to_application_fields(page: Any, notes: list) -> bool:
     return False
 
 
+WORKDAY_WAF_RE = re.compile(
+    r"security check|http.?429|\b429\b|too many requests|access denied",
+    re.I,
+)
+
+
+def workday_waf_blocked_text(blob: str) -> bool:
+    return bool(WORKDAY_WAF_RE.search(blob or ""))
+
+
+def workday_waf_blocked(page: Any) -> bool:
+    try:
+        title = page.title() or ""
+    except Exception:
+        title = ""
+    try:
+        body = page.inner_text("body", timeout=3000) or ""
+    except Exception:
+        body = ""
+    if workday_waf_blocked_text(f"{title}\n{body[:4000]}"):
+        return True
+    try:
+        status = page.evaluate("() => window.__applyEngineLastStatus || 0")
+    except Exception:
+        status = 0
+    return int(status or 0) == 429
+
+
+def should_retry_workday_headed(*, headed: bool, waf: bool) -> bool:
+    return bool(waf) and not headed
+
+
 WORKDAY_BLOCKERS = (
+    (WORKDAY_WAF_RE, "Workday Security Check (HTTP 429) blocked the browser; re-run --headed"),
     (re.compile(r"wrong email address or password|account might be locked|invalid (username|email) or password", re.I),
      "Workday rejected the sign-in (wrong password or locked account); reset the password on this tenant"),
     (re.compile(r"page you are looking for doesn.t exist|job (posting )?(is )?no longer available|position has been filled", re.I),
@@ -1128,6 +1189,9 @@ def _enter_workday_application(page: Any, url: str, notes: list) -> bool:
             return True
 
     body = _body()
+    if workday_waf_blocked_text(body) or workday_waf_blocked(page):
+        notes.append("workday entry FAILED: WAF security check (HTTP 429)")
+        return False
     if _is_blank_shell():
         notes.append("workday entry FAILED: blank Careers shell (SPA never painted)")
         return False

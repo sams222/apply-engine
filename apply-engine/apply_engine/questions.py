@@ -218,7 +218,8 @@ _HOW_HEARD_BOARD_RE = re.compile(
 )
 _HOW_HEARD_COMPANY_RE = re.compile(
     r"company (career site|careers?( page| site| website)?|website|site)|"
-    r"corporate (web)?site|career site|careers (page|website|site)|employer website"
+    r"corporate careers website|corporate (web)?site|"
+    r"career site|careers (page|website|site)|employer website"
 )
 
 
@@ -228,8 +229,8 @@ def _how_heard_score(option: str) -> int:
     if _HOW_HEARD_BOARD_RE.search(low):
         return 0
     if re.search(
-        r"company website|corporate website|company career site|"
-        r"company careers (page|site|website)|employer website",
+        r"company website|corporate website|corporate careers website|"
+        r"company career site|company careers (page|site|website)|employer website",
         low,
     ):
         return 4
@@ -554,8 +555,7 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
     add(r"degree (type|level|program)|^degree$|highest (level of )?(degree|education)|level of (education|study)|what degree|degree are you (pursuing|seeking)",
         lambda q, p, c: _degree_want(p))
     add(r"\bmajor\b(?! life)|field of study|area of study|discipline|concentration|program of study",
-        lambda q, p, c: Want(key="field_of_study", text=p.field_of_study or "Computer Science",
-                             terms=[p.field_of_study or "Computer Science", "Computer Science", "CS"], search="Computer Science"))
+        lambda q, p, c: _field_of_study_want(p))
     add(r"\bgpa\b|grade point", lambda q, p, c: Want(key="gpa", text=p.gpa, terms=_gpa_terms(p.gpa)) if p.gpa else None)
     add(r"coursework|relevant courses|courses (you('ve| have)|taken)", lambda q, p, c: Want(key="coursework", essay=True))
 
@@ -758,15 +758,57 @@ def _race_want(p: Profile) -> Want | None:
     return Want(key="race_ethnicity", text=race, terms=terms, pick=_pick_race(p))
 
 
+def _pick_veteran(options: list[str]) -> list[str]:
+    """Prefer 'not a protected veteran' when listed; else 'I am not a veteran'."""
+    cleaned = [o for o in options if str(o or "").strip()]
+    preferred = (
+        "i am not a protected veteran",
+        "not a protected veteran",
+        "i am not a veteran",
+        "i am not a veteran.",
+        "not a veteran",
+        "i am not",
+    )
+    by_norm = {norm(o): o for o in cleaned}
+    for label in preferred:
+        if label in by_norm:
+            return [by_norm[label]]
+    for label in preferred:
+        hits = [o for o in cleaned if norm(o) == label or norm(o).startswith(label)]
+        if hits:
+            return [min(hits, key=len)]
+    return []
+
+
 def _veteran_want(p: Profile) -> Want | None:
     vet = p.eeo.veteran
     if not vet:
         return None
     if "not" in norm(vet):
-        return Want(key="veteran", text="No",
-                    terms=[vet, "I am not a protected veteran", "I am not a veteran", "I am NOT a veteran", "Not a veteran",
-                           "Not a protected veteran", "No"], polarity=False)
+        return Want(
+            key="veteran",
+            text="No",
+            terms=[
+                vet,
+                "I am not a veteran",
+                "I am NOT a veteran",
+                "I am not a protected veteran",
+                "Not a veteran",
+                "Not a protected veteran",
+                "No",
+            ],
+            polarity=False,
+            pick=_pick_veteran,
+        )
     return Want(key="veteran", text=vet, terms=[vet])
+
+
+def _field_of_study_want(p: Profile) -> Want | None:
+    from apply_engine.fields import field_of_study_terms
+
+    major = (p.field_of_study or "Computer Science").strip() or "Computer Science"
+    terms = field_of_study_terms(major) or [major, "Computer Science", "CS"]
+    return Want(key="field_of_study", text=major, terms=terms, search=terms[0], searches=terms)
 
 
 def _disability_want(p: Profile) -> Want | None:

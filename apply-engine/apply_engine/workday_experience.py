@@ -273,7 +273,7 @@ def _fill_education_ids(
 
 def _fill_work_ids(page: Any, rows: list[PoolEntry], filled: list, skipped: list, notes: list) -> None:
     for row in rows:
-        existing = _prefix_for_company(page, row.company)
+        existing = _prefix_for_row(page, row)
         if existing:
             _repair_dates(page, existing, row, skipped)
             continue
@@ -637,12 +637,20 @@ def fill_work_panels(page: Any, entries: list[PoolEntry], filled: list, skipped:
     rows = dated_work(entries)
     if not rows:
         return
-    if _prefixes(page, "jobTitle") or _opened_work_ids(page, notes):
+    if _prefixes(page, "jobTitle"):
         _fill_work_ids(page, rows, filled, skipped, notes)
         return
-    for row in rows:
-        if _value_present(page, "Work Experience", row.company):
-            continue
+    missing = [row for row in rows if not _work_already_listed(page, row)]
+    if not missing:
+        for row in rows:
+            existing = _prefix_for_row(page, row)
+            if existing:
+                _repair_dates(page, existing, row, skipped)
+        return
+    if _opened_work_ids(page, notes):
+        _fill_work_ids(page, rows, filled, skipped, notes)
+        return
+    for row in missing:
         if not _open_blank(page, "Work Experience", JOB_TITLE_RE, notes):
             return
         _fill_job(page, row, filled, skipped)
@@ -748,6 +756,36 @@ def _prefix_for_company(page: Any, company: str) -> str:
         if want in _input_value(page, f"{prefix}--companyName").lower():
             return prefix
     return ""
+
+
+def _prefix_for_row(page: Any, row: PoolEntry) -> str:
+    """Match an open work row by company and title so a re-fill does not duplicate it."""
+    company = (row.company or "").strip().lower()
+    role = (row.role or "").strip().lower()
+    prefixes = list(dict.fromkeys(_prefixes(page, "jobTitle") + _prefixes(page, "companyName")))
+    for prefix in prefixes:
+        got_title = _input_value(page, f"{prefix}--jobTitle").strip().lower()
+        got_co = _input_value(page, f"{prefix}--companyName").strip().lower()
+        title_hit = bool(role) and role in got_title
+        co_hit = bool(company) and company in got_co
+        if title_hit and co_hit:
+            return prefix
+        if co_hit and (not got_title or not role):
+            return prefix
+        if title_hit and (not got_co or not company):
+            return prefix
+    return _prefix_for_company(page, row.company)
+
+
+def _work_already_listed(page: Any, row: PoolEntry) -> bool:
+    if _prefix_for_row(page, row):
+        return True
+    company = (row.company or "").strip()
+    role = (row.role or "").strip()
+    if company and _value_present(page, "Work Experience", company):
+        if not role or _value_present(page, "Work Experience", role):
+            return True
+    return False
 
 
 def _repair_dates(page: Any, prefix: str, row: PoolEntry, skipped: list) -> None:
