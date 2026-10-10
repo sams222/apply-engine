@@ -15,8 +15,16 @@ def test_prefer_sign_in_blocked_when_verify_visible():
 
 
 def test_prefer_sign_in_standalone_even_when_tenant_unknown():
+    # Unknown tenants must Create Account (GlobalFoundries). A known tenant on
+    # a standalone Sign In wall still signs in.
     assert prefer_sign_in(
         known=False,
+        verify_password_visible=False,
+        visible_password_count=1,
+        standalone_sign_in=True,
+    ) is False
+    assert prefer_sign_in(
+        known=True,
         verify_password_visible=False,
         visible_password_count=1,
         standalone_sign_in=True,

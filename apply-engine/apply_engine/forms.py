@@ -29,7 +29,7 @@ EXTRACT_JS = r"""
   const CONTAINER = [
     '.ashby-application-form-field-entry', '.field-wrapper', '.eeoc__question__wrapper',
     '.application-question', 'li.application-field', 'fieldset', '[role=radiogroup]', '[role=group]',
-    '.form-group', '.form-field', '.question', '[class*=question_]', '[class*=Question]'
+    '.form-group', '.form-field', '.field', '.question', '[class*=question_]', '[class*=Question]'
   ].join(',');
   const LABELISH = 'legend, .application-label, label.ashby-application-form-question-title, [class*=question-title], [class*=questionTitle], [class*=label]:not(input):not(option), label';
   window.__aeSeq = window.__aeSeq || 0;

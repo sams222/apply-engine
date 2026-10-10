@@ -81,6 +81,17 @@ def graduation(profile: Profile) -> tuple[int, int] | None:
 
 
 def class_standing(profile: Profile, today: date) -> str | None:
+    """Junior/Senior/etc from education start + graduation, not an LLM guess.
+
+    Started Aug 2024, graduating May 2028, today Oct 2026 → Junior (third year).
+    Graduation-only is the fallback when start is missing.
+    """
+    names = {0: "Freshman", 1: "Sophomore", 2: "Junior", 3: "Senior"}
+    start = parse_month_year(getattr(profile, "education_start", "") or "")
+    if start:
+        start_m, start_y = start
+        months = (today.year - start_y) * 12 + (today.month - start_m)
+        return names.get(min(3, max(0, months // 12)))
     grad = graduation(profile)
     if not grad:
         return None
@@ -262,6 +273,13 @@ def _how_heard_score(option: str, company: str = "") -> int:
         low,
     ):
         return 5
+    # Hierarchical leaf "Website - Gilead.com" beats a bare "Website" category.
+    if re.search(r"\bwebsite\b", low) and not re.search(r"university|campus|job board", low):
+        for tok in _company_tokens(company):
+            if tok in low or tok in re.sub(r"[^a-z0-9]+", "", low):
+                return 5
+        if re.search(r"\.[a-z]{2,}", low):
+            return 4
     if re.search(r"^career site$|^careers page$|^careers site$|^career page$|^career website$", low):
         return 3
     if _HOW_HEARD_COMPANY_RE.search(low):
@@ -393,7 +411,9 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
         lambda q, p, c: Want(key="preferred_name", text=str(_extra(p, "preferred_name") or p.first_name)))
     add(r"^(legal )?last name|^family name|^surname", lambda q, p, c: Want(key="last_name", text=p.last_name))
     add(r"^middle name", lambda q, p, c: Want(key="middle_name", leave_blank=True))
-    add(r"^(full |legal |your )?name$|^full (legal )?name|^first and last name|^candidate name|(state|enter|provide) your (full )?(legal )?name|^legal name",
+    add(r"^(full |legal |your )?name$|^full (legal )?name|full legal name|"
+        r"^first and last name|^candidate name|(state|enter|provide|what is|what's) your (full )?(legal )?name|"
+        r"^legal name",
         lambda q, p, c: Want(key="full_name", text=p.full_name))
     add(r"^pronouns?\b|what pronouns|preferred pronouns",
         lambda q, p, c: Want(key="pronouns", text=str(_extra(p, "pronouns") or ""),
@@ -496,8 +516,15 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
     add(r"government official|public official|politically exposed",
         lambda q, p, c: _yn("government_official_relative", _bool(p, "government_official_relative"))
         if re.search(r"relative|family", q) else _yn("government_official", _bool(p, "government_official")))
-    add(r"conflict of interest|close personal relationship with (a )?senior",
+    add(r"conflict of interest|close personal relationship with (a )?senior|"
+        r"involved in any (active |potential )?(or potential )?relationships|"
+        r"active or potential relationships? with",
         lambda q, p, c: _yn("conflict_of_interest", _bool(p, "conflict_of_interest")))
+    add(r"(if (yes|so).{0,80})?(describe|explain|provide|list|detail|name).{0,60}(relationship|relative|employee)|"
+        r"employee relationship.{0,40}(detail|describe|name|explain)|"
+        r"(relationship|relative).{0,40}(detail|describe|explain|if yes)",
+        lambda q, p, c: Want(key="employee_relationship_detail", text="N/A",
+                             terms=["N/A", "NA", "Not applicable", "None"], polarity=False))
     add(r"\b(relatives?|family members?|related to|spouse|domestic partner)\b.{0,80}(employ|work|company|currently)|(employ|work).{0,60}\b(relatives?|family members?)\b",
         lambda q, p, c: Want(key="family_at_employer", text="No", terms=["No", "None"], polarity=False))
     add(r"refer(red|ral)|who referred|employee referral",
@@ -536,8 +563,11 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
     add(r"on-?site|in[- ]office|in[- ]person|hybrid|commute|anchor days|days (a|per) week|return to office|work from (the|our) office",
         lambda q, p, c: _yn("willing_onsite", _bool(p, "willing_onsite")))
     add(r"willing to travel|travel (requirement|up to)", lambda q, p, c: _yn("willing_to_travel", _bool(p, "willing_to_travel")))
-    add(r"(salary|compensation|pay|hourly rate|wage).{0,30}(expect|requirement|desired|range)|desired (salary|pay|compensation)|expected (salary|pay|compensation)|base salary range",
-        lambda q, p, c: _pay_want(p, c))
+    add(r"(salary|compensation|pay|hourly rate|wage|hourly).{0,40}(expect|requirement|desired|range)|"
+        r"desired (hourly rate|salary|pay|compensation|wage)|expected (hourly rate|salary|pay|compensation)|"
+        r"base salary range|(what is|what's) your (desired |expected )?(hourly rate|pay|salary|wage)|"
+        r"^hourly rate\b|hourly rate\b",
+        lambda q, p, c: _pay_want(p, c, q))
     add(r"final year of (study|school|college|university|your)|end[- ]of[- ]stud(y|ies)|last year of (study|school|college|university)",
         lambda q, p, c: _yn("final_year", class_standing(p, c.today) == "Senior") if class_standing(p, c.today) else None)
     add(r"full[- ]time (role|employment|position|job|offer|opportunit)",
@@ -589,7 +619,8 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
         lambda q, p, c: _graduation_want(p, q))
     add(r"(currently )?enrolled|current(ly)? a student|are you a student|pursuing (a|an)",
         lambda q, p, c: _enrolled_want(p, q))
-    add(r"(class|academic) (standing|year|level)|year (in|of) (school|study|college|university)|current year|what year are you",
+    add(r"(class|academic) (standing|year|level)|year (in|of) (school|study|college|university)|"
+        r"current year|what year are you|rising (freshman|sophomore|junior|senior)|class standing",
         lambda q, p, c: Want(key="class_standing", text=class_standing(p, c.today) or "",
                              terms=[class_standing(p, c.today) or "", *_standing_aliases(class_standing(p, c.today))])
         if class_standing(p, c.today) else None)
@@ -609,16 +640,20 @@ def _rules() -> list[tuple[re.Pattern, Rule]]:
     add(r"years of.{0,40}experience|how many years|how long have you",
         lambda q, p, c: Want(key="years_experience", text=str(years_experience(c.pool, c.today)),
                              pick=_pick_number(years_experience(c.pool, c.today)), terms=[str(years_experience(c.pool, c.today))]))
-    add(r"(current|previous|most recent|present) (or (previous|most recent|past) )?(job |position )?title",
-        lambda q, p, c: Want(key="current_title", text=current_role(c.pool).role) if current_role(c.pool) else None)
     add(r"\b(sat|act|gre|gmat)\b.{0,60}\bscores?\b|\bscores?\b.{0,40}\b(sat|act|gre|gmat)\b",
         lambda q, p, c: Want(key="test_scores", text=str(_extra(p, "test_scores")))
         if _extra(p, "test_scores") else Want(key="test_scores", leave_blank=True))
     add(r"may we contact (your )?(current |previous |present )?employer|contact your (current )?employer",
         lambda q, p, c: _yn("contact_current_employer", _bool(p, "contact_current_employer")))
-    add(r"^(current|most recent) (company|employer)|^(company|employer)$|current (company|employer|organization)|(current|previous|most recent) (or (previous|most recent|past) )?employer",
+    # Company before title so "current company" never lands on a title rule.
+    add(r"(current|most recent|present) (company|employer|organization)|^(company|employer)$|"
+        r"which (company|employer)|what( is|'s) your (current )?(company|employer)|"
+        r"(current|previous|most recent) (or (previous|most recent|past) )?employer",
         lambda q, p, c: Want(key="current_company", text=(current_role(c.pool).company if current_role(c.pool) else p.school)))
-    add(r"^(current|most recent) (title|job title|role|position)|^(title|job title)$",
+    add(r"(current|previous|most recent|present) (or (previous|most recent|past) )?(job title|position title)|"
+        r"(current|previous|most recent|present) (or (previous|most recent|past) )?(job |position )?title(?!s)|"
+        r"^(current|most recent) (title|job title|role|position)|^(title|job title|role|position)$|"
+        r"what( is|'s) your (current |most recent )?(job )?title",
         lambda q, p, c: Want(key="current_title", text=(current_role(c.pool).role if current_role(c.pool) else "Student")))
     add(r"(programming|scripting|coding|software) languages?|languages?.{0,30}(experience|familiar|comfortable|worked with)|tech(nical)? stack|technologies (do you|are you)",
         lambda q, p, c: _tech_want(p, c))
@@ -921,10 +956,10 @@ def _gpa_terms(gpa: str | None) -> list[str]:
 
 def _standing_aliases(standing: str | None) -> list[str]:
     return {
-        "Freshman": ["First year", "1st year", "Year 1"],
-        "Sophomore": ["Second year", "2nd year", "Year 2"],
-        "Junior": ["Third year", "3rd year", "Year 3"],
-        "Senior": ["Fourth year", "4th year", "Year 4"],
+        "Freshman": ["First year", "1st year", "Year 1", "Rising Freshman", "Rising freshman"],
+        "Sophomore": ["Second year", "2nd year", "Year 2", "Rising Sophomore", "Rising sophomore"],
+        "Junior": ["Third year", "3rd year", "Year 3", "Rising Junior", "Rising junior", "rising-year Junior"],
+        "Senior": ["Fourth year", "4th year", "Year 4", "Rising Senior", "Rising senior"],
     }.get(standing or "", [])
 
 
@@ -1043,10 +1078,18 @@ def posted_pay_floor(description: str) -> str | None:
     return f"${amount}/hour" if hourly else f"${amount}/year"
 
 
-def _pay_want(p: Profile, c: Context) -> Want:
+def _pay_want(p: Profile, c: Context, q: str = "") -> Want:
     text = posted_pay_floor(c.description) or str(
         _extra(p, "desired_pay") or _extra(p, "desired_pay_fallback") or "$30/hour"
     )
+    hourly_q = bool(re.search(r"hourly|per hour|/hour|\bwage\b", q)) and not re.search(
+        r"salary|annual|yearly|per year", q
+    )
+    if hourly_q:
+        m = re.search(r"(\d+(?:\.\d+)?)", (text or "").replace(",", ""))
+        if m:
+            n = m.group(1)
+            return Want(key="desired_pay", text=n, terms=[n, f"${n}", f"${n}/hour", text])
     return Want(key="desired_pay", text=text, terms=[text])
 
 

@@ -139,17 +139,18 @@ def prefer_sign_in(
 
     A Create Account page (Verify New Password, or 2+ password fields) must
     stay on the create path even if workday-accounts.json already has this tenant.
-    A standalone Sign In wall (/private/login, heading Sign In, one password)
-    is Sign In even when the tenant is not yet in workday-accounts.json.
+    A standalone Sign In wall is Sign In only when this tenant is already in
+    workday-accounts.json. Unknown tenants create the account instead of
+    signing in (GlobalFoundries: header Sign In recovery with no accounts entry).
     """
     if verify_password_visible:
         return False
     if visible_password_count >= 2:
         return False
-    if standalone_sign_in and visible_password_count <= 1:
-        return True
     if not known:
         return False
+    if standalone_sign_in and visible_password_count <= 1:
+        return True
     return visible_password_count == 1
 
 

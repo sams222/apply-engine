@@ -601,7 +601,15 @@ def form_field_control(page: Any, *suffixes: str) -> Any | None:
             continue
         for w in range(min(wrapper.count(), 3)):
             scope = wrapper.nth(w)
-            for sel in ("input:not([type=hidden])", "button", "select", "textarea"):
+            for sel in (
+                "input:not([type=hidden])",
+                "button",
+                "select",
+                "textarea",
+                "[role=button]",
+                "[data-automation-id=selectWidget]",
+                "[data-uxi-widget-type]",
+            ):
                 try:
                     loc = scope.locator(sel)
                     for i in range(min(loc.count(), 4)):
@@ -610,6 +618,14 @@ def form_field_control(page: Any, *suffixes: str) -> Any | None:
                             return cand
                 except Exception:
                     continue
+            try:
+                tag = (scope.evaluate("el => (el.tagName || '').toLowerCase()") or "")
+                role = (scope.get_attribute("role") or "").lower()
+                if tag in {"button", "input", "select", "textarea"} or role == "button":
+                    if scope.is_visible():
+                        return scope
+            except Exception:
+                pass
     return None
 
 
@@ -1333,6 +1349,7 @@ def fill_workday_sticky_fields(
     # blank, and the phone code sat at +687 -- every downstream field failed
     # because this one was set eleventh instead of first.
     _fill_country_first(page, profile, filled, skipped, notes)
+    _fill_country_phone_code(page, filled, skipped, notes)
     _fill_phone_number_only(page, profile, filled, skipped)
     _fill_phone_device_type(page, filled, skipped)
     _fill_state_then_postal(page, profile, filled, skipped, notes)
@@ -1544,8 +1561,10 @@ def _fill_country_first(page: Any, profile: Profile, filled: list, skipped: list
     filled.append({"label": "Country", "mapped_to": "country", "value": readback,
                    "method": "workday-prompt-readback"})
     notes.append(f"Country set to {readback!r} before dependent fields")
-    # Changing Country re-renders the address and phone sections.
+    # Changing Country re-renders the address and phone sections, wipes address
+    # and email, and may add a Middle Name field that shifts First/Last.
     _settle(page, 1200)
+    _refill_after_country_change(page, profile, filled, skipped, notes)
 
 
 HOW_HEARD_AIDS = (
@@ -1655,6 +1674,14 @@ def _how_heard_leaf_score(text: str, company: str = "") -> int:
     from apply_engine.questions import _how_heard_score
 
     return _how_heard_score(text, company)
+
+
+def _how_heard_is_website_category(text: str) -> bool:
+    """True for a hierarchical parent like 'Website' (not a university/job-board leaf)."""
+    low = (text or "").strip().lower()
+    if re.search(r"university|campus", low):
+        return False
+    return bool(re.search(r"^website\b|\bwebsite\b", low))
 
 
 def _pick_how_heard_option(
@@ -1815,8 +1842,14 @@ def _walk_how_heard_multiselect(
             return _multiselect_chips(control)
         hit = _pick_how_heard_option(top, terms, company)
         best: tuple[str, str, int] | None = None
+        # Prefer the Website category first so we pick 'Website - Gilead.com'
+        # instead of a stale Career Fair leaf from a previously opened list.
+        ranked_cats = sorted(
+            top,
+            key=lambda row: (0 if _how_heard_is_website_category(row[1]) else 1, row[1].lower()),
+        )
         if hit is None or _how_heard_leaf_score(hit[1], company) < 5:
-            for _o, cat in top:
+            for _o, cat in ranked_cats:
                 o = _reveal_how_heard_option(page, cat)
                 try:
                     vis = bool(o is not None and o.is_visible())
@@ -1833,7 +1866,15 @@ def _walk_how_heard_multiselect(
                     log.append((cat, "click failed"))
                     continue
                 _settle(page, 800)
+                parent_labels = {t for _, t in top}
                 kids = _scroll_how_heard_options(page) or _visible_how_heard_options(page)
+                if _how_heard_is_website_category(cat):
+                    fresh = [
+                        (k, t) for k, t in kids
+                        if t not in parent_labels or _how_heard_leaf_score(t, company) >= 2
+                    ]
+                    if fresh:
+                        kids = fresh
                 log.append((cat, [k for _, k in kids]))
                 for _k, leaf in kids:
                     score = _how_heard_leaf_score(leaf, company)
@@ -2052,15 +2093,145 @@ def _fill_phone_device_type(page: Any, filled: list, skipped: list) -> None:
     })
 
 
-def _fill_phone_number_only(page: Any, profile: Profile, filled: list, skipped: list) -> None:
-    code = page.locator(
-        '[data-automation-id="country-phone-code"], [data-automation-id="countryPhoneCode"]'
+US_PHONE_CODE_TERMS = (
+    "United States of America (+1)",
+    "United States (+1)",
+    "USA (+1)",
+    "+1",
+)
+
+
+def _us_phone_code_committed(text: str) -> bool:
+    raw = parse_state_widget_text(text or "")
+    if not raw or raw.strip().lower() in SELECT_ONE:
+        return False
+    if re.search(r"\+1\b", raw) and not re.search(r"\+1\d", raw):
+        return True
+    return readback_committed(raw, US_PHONE_CODE_TERMS)
+
+
+def _fill_country_phone_code(page: Any, filled: list, skipped: list, notes: list) -> None:
+    """IP geolocation defaults this to Germany (+49); set United States (+1)."""
+    control = form_field_control(page, "countryPhoneCode")
+    if control is None:
+        loc = page.locator(
+            '[data-automation-id="countryPhoneCode"], [data-automation-id="country-phone-code"], '
+            '[data-automation-id="formField-countryPhoneCode"] button, '
+            '[data-automation-id="formField-countryPhoneCode"] [role=button]'
+        )
+        try:
+            for i in range(min(loc.count(), 4)):
+                cand = loc.nth(i)
+                if cand.is_visible():
+                    control = cand
+                    break
+        except Exception:
+            control = None
+    if control is None:
+        return
+    current = widget_readback(control)
+    if _us_phone_code_committed(current):
+        filled.append({
+            "label": "Country Phone Code",
+            "mapped_to": "country_phone_code",
+            "value": current,
+            "method": "workday-phone-code",
+        })
+        return
+    readback = select_prompt(
+        page,
+        control,
+        list(US_PHONE_CODE_TERMS),
+        readback_fn=lambda c=control: widget_readback(c),
+        close_outside=True,
     )
+    if _us_phone_code_committed(readback):
+        filled.append({
+            "label": "Country Phone Code",
+            "mapped_to": "country_phone_code",
+            "value": readback,
+            "method": "workday-phone-code",
+        })
+        notes.append(f"Country Phone Code set to {readback!r}")
+        return
+    skipped.append({
+        "label": "Country Phone Code*",
+        "reason": f"readback {readback!r} is not United States (+1)",
+        "readback": readback,
+    })
+
+
+def _write_form_field_value(page: Any, suffixes: tuple[str, ...], value: str) -> str:
+    loc = form_field_control(page, *suffixes)
+    if loc is None:
+        return ""
     try:
-        if code.count() and code.first.is_visible():
-            skipped.append({"label": "Country Phone Code", "reason": "never fill country-phone-code"})
+        loc.click(timeout=2000)
+        loc.fill("")
+        if value:
+            loc.fill(value, timeout=4000)
+        return (widget_readback(loc) or "").strip()
     except Exception:
-        pass
+        try:
+            loc.fill(value, timeout=4000)
+            return (widget_readback(loc) or "").strip()
+        except Exception:
+            return ""
+
+
+def _refill_after_country_change(
+    page: Any, profile: Profile, filled: list, skipped: list, notes: list
+) -> None:
+    """Re-enter name/address/email after Country USA redraws My Information."""
+    notes.append("workday: re-entering name/address/email after Country change")
+    pairs = (
+        (("legalName--firstName", "legalNameSection--firstName", "legalNameSection_firstName"),
+         profile.first_name, "first_name", "First Name"),
+        (("legalName--lastName", "legalNameSection--lastName", "legalNameSection_lastName"),
+         profile.last_name, "last_name", "Last Name"),
+        (("addressLine1",), profile.address_line1, "address_line1", "Address Line 1"),
+        (("city",), profile.city, "city", "City"),
+        (("postalCode",), profile.postal_code, "postal_code", "Postal Code"),
+        (("emailAddress--emailAddress", "emailAddress", "email"), profile.email, "email", "Email Address"),
+    )
+    middle = _write_form_field_value(
+        page,
+        ("legalName--middleName", "legalNameSection--middleName", "legalNameSection_middleName"),
+        "",
+    )
+    if middle:
+        # Country USA added a Middle Name field; leave it blank so Last Name stays last.
+        try:
+            loc = form_field_control(
+                page, "legalName--middleName", "legalNameSection--middleName", "legalNameSection_middleName"
+            )
+            if loc is not None:
+                loc.fill("")
+        except Exception:
+            pass
+        filled.append({
+            "label": "Middle Name",
+            "mapped_to": "middle_name",
+            "value": "",
+            "method": "workday-country-redraw-blank",
+        })
+    for suffixes, value, key, label in pairs:
+        if not (value or "").strip():
+            continue
+        shown = _write_form_field_value(page, suffixes, value)
+        if shown:
+            filled[:] = [row for row in filled if row.get("mapped_to") != key]
+            filled.append({
+                "label": label,
+                "mapped_to": key,
+                "value": shown,
+                "method": "workday-country-redraw",
+            })
+        else:
+            skipped.append({"label": label, "reason": f"empty after Country redraw (wanted {value!r})"})
+
+
+def _fill_phone_number_only(page: Any, profile: Profile, filled: list, skipped: list) -> None:
     target = form_field_control(page, "phoneNumber")
     if target is None:
         loc = page.locator('[data-automation-id="phone-number"]')
