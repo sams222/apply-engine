@@ -85,12 +85,15 @@ _BROWSER_SKIP_LABELS = {"greenhouse_entry"}
 
 def review_status(*, submit_clicked: bool, notes: list | None, skipped: list | None) -> str:
     """waiting_confirm only when the fill actually reached a reviewable application."""
-    if submit_clicked:
-        return "submitted"
     if any("needs_browser" in str(n or "") for n in notes or []):
         return "needs_browser"
-    if any("needs_user" in str(n or "") for n in notes or []):
+    if any(
+        "needs_user" in str(n or "") or "needs_code" in str(n or "")
+        for n in notes or []
+    ):
         return "needs_user"
+    if submit_clicked:
+        return "submitted"
     for raw in skipped or []:
         label = str(raw.get("label") if isinstance(raw, dict) else raw) or ""
         if label in _BROWSER_SKIP_LABELS:
@@ -311,6 +314,8 @@ def fill_application(
                 if _enter_single_page_application(page, ats, notes):
                     _upload_resume(page, str(resume_path), filled, skipped, notes, profile=profile)
                     page.wait_for_timeout(2500)
+                    if ats == ATS_ASHBY and ashby_upload_failed(page):
+                        _record_ashby_upload_failure(filled, skipped, notes)
                     fill_form(
                         page,
                         profile=profile,
@@ -335,6 +340,8 @@ def fill_application(
                         skipped=skipped,
                         notes=notes,
                     )
+                    if ashby_upload_failed(page):
+                        _record_ashby_upload_failure(filled, skipped, notes)
                 elif not any("needs_user" in (n or "") for n in notes):
                     notes.append("needs_user: ashby apply form not entered")
             else:
@@ -378,17 +385,32 @@ def fill_application(
             if submit and stop_before_submit:
                 notes.append("needs_user: confirm stopped before Submit: " + "; ".join(stop_before_submit[:6]))
             elif submit:
-                if _captcha_or_cloudflare(page):
+                if greenhouse_verification_code_visible(page):
+                    notes.append(
+                        "needs_user: needs_code — Greenhouse emailed a verification code"
+                    )
+                elif _captcha_or_cloudflare(page):
                     notes.append(
                         "needs_user: captcha/cloudflare blocking submit — do not fake-submit"
                     )
                 else:
                     try:
                         submit_clicked = _click_submit(page)
-                        notes.append("submit clicked via confirm")
+                        page.wait_for_timeout(800)
+                        if greenhouse_verification_code_visible(page):
+                            submit_clicked = False
+                            notes.append(
+                                "needs_user: needs_code — Greenhouse emailed a verification code"
+                            )
+                        else:
+                            notes.append("submit clicked via confirm")
                     except SubmitBlockedError as exc:
                         msg = str(exc)
-                        if "no submit control" in msg.lower() or "disabled" in msg.lower():
+                        if greenhouse_verification_code_visible(page):
+                            notes.append(
+                                "needs_user: needs_code — Greenhouse emailed a verification code"
+                            )
+                        elif "no submit control" in msg.lower() or "disabled" in msg.lower():
                             notes.append(f"needs_user: {msg}")
                         else:
                             raise
@@ -538,6 +560,12 @@ def _file_input_required(loc: Any, label: str) -> bool:
             return True
         if loc.get_attribute("required") is not None:
             return True
+        eid = loc.get_attribute("id") or ""
+        name = loc.get_attribute("name") or ""
+        # Greenhouse custom questions (transcript, required cover letter) use question_* ids
+        # without a * in the accessible name. Treat them as required so they are not skipped silently.
+        if re.search(r"^question_\d+", eid) or "answers_attributes" in name:
+            return True
     except Exception:
         pass
     return False
@@ -601,7 +629,9 @@ def _upload_resume(
             element_id = loc.get_attribute("id") or ""
         except Exception:
             name, element_id = "", ""
-        return label, file_input_kind(label, name, element_id)
+        context = _file_field_context(loc)
+        blob_label = " ".join(x for x in (label, context) if x).strip()
+        return blob_label or label, file_input_kind(blob_label or label, name, element_id)
 
     def _try_resume(loc: Any) -> bool:
         nonlocal resume_done
@@ -670,7 +700,7 @@ CONTAINS_KEYS = {
 WD_AUTOMATION_IDS = {
     "first_name": ("legalName--firstName", "legalNameSection_firstName", "firstName"),
     "last_name": ("legalName--lastName", "legalNameSection_lastName", "lastName"),
-    "email": ("email", "emailAddress"),
+    "email": ("email", "emailAddress", "emailAddress--emailAddress"),
     "phone": ("phone-number",),
     "city": ("city", "addressSection_city"),
     "state": ("addressSection_countryRegion",),
@@ -690,6 +720,7 @@ WD_AUTOMATION_IDS = {
 # Postal Code came back blank on every live run while the fixture passed.
 WD_FORM_FIELD_WRAPPERS = {
     "first_name": ("legalName--firstName", "legalNameSection--firstName", "legalNameSection_firstName"),
+    "middle_name": ("legalName--middleName", "legalNameSection--middleName", "legalNameSection_middleName"),
     "last_name": ("legalName--lastName", "legalNameSection--lastName", "legalNameSection_lastName"),
     "address_line1": ("addressLine1",),
     "city": ("city",),
@@ -698,7 +729,7 @@ WD_FORM_FIELD_WRAPPERS = {
     "country": ("country",),
     "how_heard": ("source",),
     "phone": ("phoneNumber",),
-    "email": ("email",),
+    "email": ("email", "emailAddress", "emailAddress--emailAddress"),
 }
 
 # Inside a wrapper, this is the control we want.
@@ -1445,9 +1476,25 @@ def _run_workday(
         notes.append("workday auth failed — not continuing wizard (needs_user)")
         return
 
-    already_in_app = _my_information_visible_anywhere(page) or _application_controls_visible(page)
+    signed_in_already = _sign_in_already_submitted(notes)
+    if (
+        not signed_in_already
+        and not _my_information_visible_anywhere(page)
+        and _visible_password_count(page) == 0
+        and not _create_signin_step_active(page)
+    ):
+        _wait_guest_my_information(page)
+    guest = (not signed_in_already) and _guest_my_information(page)
+    already_in_app = (
+        guest
+        or _my_information_visible_anywhere(page)
+        or _application_controls_visible(page)
+    )
     if already_in_app:
-        notes.append("workday: already past Sign In — skipping create-account wizard")
+        if guest:
+            notes.append("workday: My Information with no login — guest apply, skipping auth")
+        else:
+            notes.append("workday: already past Sign In — skipping create-account wizard")
         signed_in = True
     else:
         widgets_ready = _ensure_workday_auth_widgets(page, notes)
@@ -1520,12 +1567,17 @@ def _run_workday(
         else:
             _park_before_application_fields(filled, skipped, notes, page)
             return
-    # Only now record auth success against UI truth
-    filled.append({"label": "Email Address", "mapped_to": "email", "value": email, "method": "workday-auth"})
-    filled.append({"label": "password", "mapped_to": "workday_password", "value": "[redacted]", "method": "workday-auth"})
-    if tenant_map_path:
-        remember_account(tenant_map_path, url, email)
-        notes.append(f"workday account recorded for {tenant_map_path.name} (email only)")
+    # Only now record auth success against UI truth. Guest apply never created
+    # an account — do not write workday-accounts.json or a fake password row.
+    # Do not re-detect guest from My Information after a real Sign In: passwords
+    # are hidden then, which looks identical to guest MI.
+    guest = any("guest apply" in str(n or "").lower() for n in notes)
+    if not guest:
+        filled.append({"label": "Email Address", "mapped_to": "email", "value": email, "method": "workday-auth"})
+        filled.append({"label": "password", "mapped_to": "workday_password", "value": "[redacted]", "method": "workday-auth"})
+        if tenant_map_path:
+            remember_account(tenant_map_path, url, email)
+            notes.append(f"workday account recorded for {tenant_map_path.name} (email only)")
 
     revisited_experience = False
     for step in range(12):
@@ -1681,11 +1733,30 @@ def _workday_auth(
     notes: list,
     tenant_map_path: Path | None,
 ) -> bool:
-    from apply_engine.workday import auth_click_allowed, emails_match, known_account_email, prefer_sign_in
+    from apply_engine.workday import (
+        auth_click_allowed,
+        emails_match,
+        is_standalone_sign_in_url,
+        known_account_email,
+        prefer_sign_in,
+    )
 
     _maybe_dismiss(page)
+    if _guest_my_information(page):
+        notes.append("workday: My Information with no login — guest apply, skipping auth")
+        return True
+    if (
+        not _visible_password_count(page)
+        and not _create_signin_step_active(page)
+        and _wait_guest_my_information(page)
+    ):
+        notes.append("workday: My Information with no login — guest apply, skipping auth")
+        return True
     root = _auth_scope(page)
     if not _auth_widgets_ready(root):
+        if _guest_my_information(page):
+            notes.append("workday: My Information with no login — guest apply, skipping auth")
+            return True
         notes.append("no Workday auth form on this page")
         return False
 
@@ -1693,24 +1764,35 @@ def _workday_auth(
     pw_count = len(_visible_password_inputs(root))
     create_mode = verify_visible or pw_count >= 2
     known = known_account_email(tenant_map_path, url) if tenant_map_path else None
+    login_url = is_standalone_sign_in_url(url)
     standalone = _on_sign_in_page(page) and not create_mode
     want_sign_in = prefer_sign_in(
         known=bool(known),
         verify_password_visible=verify_visible,
         visible_password_count=pw_count,
-        standalone_sign_in=standalone,
+        standalone_sign_in=standalone and bool(known),
     )
     # Never click Sign In first on a Create Account page — that opens the overlay
     # with an empty email (Motorola dd7478). Never click Sign In when Verify New
-    # Password is showing. Standalone /private/login is always Sign In.
+    # Password is showing. Unknown tenants create an account even if a Sign In
+    # heading is showing (GlobalFoundries header recovery). /private/login with
+    # a known account is Sign In.
 
-    if standalone:
+    if standalone and (known or login_url):
         notes.append("workday_auth: standalone Sign In form — filling Sign In")
         if not _fill_and_submit_sign_in(page, email, password, notes, skipped):
             return False
         _wait_left_sign_in_page(page)
         notes.append("workday auth submitted (sign-in)")
         return True
+    if standalone and not known:
+        notes.append("workday_auth: Sign In showing but no known account — Create Account")
+        if _switch_to_create_account(page, notes):
+            root = _auth_scope(page)
+            verify_visible = _verify_password_visible(root)
+            pw_count = len(_visible_password_inputs(root))
+            create_mode = verify_visible or pw_count >= 2
+            want_sign_in = False
 
     email_locators = _visible_auth_email_inputs(root)
     if not email_locators:
@@ -1738,6 +1820,10 @@ def _workday_auth(
     _fill_auth_passwords(root, password)
     password_ok, verify_ok = _password_fields_ok(root, need_verify=create_mode)
     if not password_ok:
+        # Guest Apply Manually: the email field painted before My Information.
+        if _wait_guest_my_information(page):
+            notes.append("workday: My Information with no login — guest apply, skipping auth")
+            return True
         skipped.append({"label": "password", "reason": "password field empty after fill"})
         notes.append("workday_auth: password fields not filled")
         return False
@@ -1879,6 +1965,35 @@ def _auth_error_visible(page: Any) -> bool:
                         return True
             except Exception:
                 continue
+    return False
+
+
+def _switch_to_create_account(page: Any, notes: list) -> bool:
+    """Flip a Sign In form over to Create Account when no tenant account is known."""
+    selectors = (
+        '[data-automation-id="createAccountLink"]',
+        '[data-automation-id="createAccountSubmitButton"]',
+        'button:has-text("Create Account")',
+        'a:has-text("Create Account")',
+        'button:has-text("Create an Account")',
+        'a:has-text("Create an Account")',
+    )
+    for scope in _iter_dom_scopes(page):
+        for sel in selectors:
+            try:
+                loc = scope.locator(sel)
+                for i in range(min(loc.count(), 4)):
+                    node = loc.nth(i)
+                    if not node.is_visible():
+                        continue
+                    node.click(timeout=3000)
+                    page.wait_for_timeout(800)
+                    if _verify_password_visible(page) or len(_visible_password_inputs(page)) >= 2:
+                        notes.append(f"workday_auth: switched to Create Account via {sel}")
+                        return True
+            except Exception:
+                continue
+    notes.append("workday_auth: could not switch to Create Account")
     return False
 
 
@@ -2216,6 +2331,37 @@ def _my_information_visible_anywhere(page: Any) -> bool:
     return False
 
 
+def _visible_password_count(page: Any) -> int:
+    n = 0
+    for scope in _iter_dom_scopes(page):
+        n += len(_visible_password_inputs(scope))
+    return n
+
+
+def _guest_my_information(page: Any) -> bool:
+    """True when My Information is showing and there is no login password to fill.
+
+    Guest Apply Manually (JLL) lands here with no Create Account/Sign In.
+    """
+    if _visible_password_count(page) > 0:
+        return False
+    return _my_information_visible_anywhere(page)
+
+
+def _wait_guest_my_information(page: Any, timeout_ms: int = 2500) -> bool:
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000.0
+    while time.monotonic() < deadline:
+        if _guest_my_information(page):
+            return True
+        if _visible_password_count(page) > 0:
+            return False
+        try:
+            page.wait_for_timeout(200)
+        except Exception:
+            time.sleep(0.2)
+    return _guest_my_information(page)
+
+
 def _locator_is_honeypot(loc: Any) -> bool:
     meta = _control_meta(loc)
     try:
@@ -2551,9 +2697,15 @@ def _clear_workday_login_wall(
     except Exception:
         url = ""
     on_login_url = is_standalone_sign_in_url(url)
+    if _guest_my_information(page):
+        return True
     if not on_login_url and not _on_sign_in_page(page):
         return True
     if _verify_password_visible(page) or len(_visible_password_inputs(page)) >= 2:
+        return True
+    known = known_account_email(tenant_map_path, url) if tenant_map_path else None
+    if _on_sign_in_page(page) and not known and not on_login_url:
+        notes.append("workday_auth: Sign In wall with no known account — leaving for Create Account")
         return True
     if not _auth_widgets_ready_anywhere(page):
         notes.append("workday_auth: Sign In wall — waiting for widgets")
@@ -3524,6 +3676,96 @@ def _locator_for_field(page: Any, field: dict) -> Any | None:
     return None
 
 
+def _file_field_context(loc: Any) -> str:
+    """Nearby legend/label text for Greenhouse question_* file inputs without a wired label."""
+    try:
+        return str(
+            loc.evaluate(
+                """el => {
+                  const box = el.closest(
+                    'fieldset, .field, .application-question, li.application-field, .form-group, [class*=question]'
+                  );
+                  if (!box) return '';
+                  const lab = box.querySelector('label, legend, .application-label');
+                  const t = ((lab && (lab.innerText || lab.textContent)) || box.innerText || '')
+                    .replace(/\\s+/g, ' ').trim();
+                  return t.slice(0, 240);
+                }"""
+            )
+            or ""
+        )
+    except Exception:
+        return ""
+
+
+def greenhouse_verification_code_visible(page: Any) -> bool:
+    """True on Greenhouse's 8-box #security-input email verification step."""
+    try:
+        loc = page.locator(
+            "#security-input, input#security-input, [id='security-input'], "
+            "input[autocomplete='one-time-code'], input[name='security_code']"
+        )
+        for i in range(min(loc.count(), 4)):
+            node = loc.nth(i)
+            try:
+                if node.is_visible():
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    try:
+        body = page.inner_text("body") or ""
+    except Exception:
+        body = ""
+    if not re.search(
+        r"verification code was sent|enter (the |your )?(verification|security) code|"
+        r"one[- ]time (pass)?code|we (just )?sent .+ code",
+        body,
+        re.I,
+    ):
+        return False
+    try:
+        boxes = page.locator("input[maxlength='1'], input[maxlength=\"1\"]")
+        n = 0
+        for i in range(min(boxes.count(), 12)):
+            try:
+                if boxes.nth(i).is_visible():
+                    n += 1
+            except Exception:
+                continue
+        if n >= 6:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def ashby_upload_failed(page: Any) -> bool:
+    """True when Ashby shows the 'failed to upload' toast after a CORS/S3 403."""
+    try:
+        loc = page.get_by_text(re.compile(r"failed to upload", re.I))
+        for i in range(min(loc.count(), 4)):
+            try:
+                if loc.nth(i).is_visible():
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    try:
+        body = page.inner_text("body") or ""
+    except Exception:
+        return False
+    return bool(re.search(r"failed to upload", body, re.I))
+
+
+def _record_ashby_upload_failure(filled: list, skipped: list, notes: list) -> None:
+    notes.append("needs_browser: Ashby resume upload failed (failed to upload)")
+    skipped.append({"label": "resume", "reason": "Ashby failed to upload"})
+    filled[:] = [row for row in filled if row.get("mapped_to") != "resume"]
+
+
 def _accessible_name(loc: Any) -> str:
     try:
         return str(
@@ -3539,6 +3781,14 @@ def _accessible_name(loc: Any) -> str:
                   }
                   const aria = el.getAttribute('aria-label') || '';
                   if (aria && !wideLegal(aria)) return aria;
+                  const box = el.closest(
+                    'fieldset, .field, .application-question, li.application-field, .form-group, [class*=question]'
+                  );
+                  if (box) {
+                    const lab = box.querySelector('label, legend, .application-label');
+                    const t = ((lab && (lab.innerText || lab.textContent)) || '').trim();
+                    if (t && !wideLegal(t)) return t;
+                  }
                   return el.name || el.id || '';
                 }"""
             )

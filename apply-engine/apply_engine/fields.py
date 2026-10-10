@@ -31,7 +31,7 @@ FIELD_ALIASES: list[tuple[str, tuple[str, ...]]] = [
     ("education_start", ("first year attended", "education start", "started school", "enrollment date")),
     ("resume", ("resume", "resume/cv", "cv", "attach resume", "upload resume")),
     ("cover_letter", ("cover letter", "coverletter")),
-    ("full_name", ("full name", "first and last name", "first & last name", "legal name", "your name", "candidate name")),
+    ("full_name", ("full name", "full legal name", "first and last name", "first & last name", "legal name", "your name", "candidate name")),
     # Do NOT use bare "work authorization" — Waymo "Do you require work authorization?" means sponsorship.
     ("work_authorized_us", ("authorized to work", "legally authorized", "eligible to work", "right to work", "work authorized")),
     ("need_sponsorship", ("require work authorization", "require sponsorship", "visa sponsorship", "need sponsorship", "h1b", "h-1b", "need visa", "employer support", "work permit")),
@@ -230,6 +230,8 @@ def file_input_kind(label: str = "", name: str = "", element_id: str = "") -> st
         return "transcript"
     if re.search(r"\b(resume|cv|curriculum vitae)\b", blob) or "systemfield_resume" in blob:
         return "resume"
+    if re.search(r"question_\d+", blob) or "answers_attributes" in blob:
+        return "other"
     if not (label or "").strip():
         return "resume"
     return "other"
