@@ -12,6 +12,7 @@ Offline regression (no network, nothing applied):
 
 ```bash
 python3 scripts/hunt/test_priority_unresolved.py
+python3 scripts/hunt/test_vendor_resolvers.py
 ```
 
 Optional `--live` replays against public Greenhouse/careers endpoints only. Details: [`scripts/hunt/README.md`](scripts/hunt/README.md).

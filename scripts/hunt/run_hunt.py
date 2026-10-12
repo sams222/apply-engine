@@ -64,7 +64,7 @@ HARD_H = 72  # note age-skipped for >40h ≤72h
 CATS = {"Software", "AI/ML/Data", "Product", "Quant", "Hardware"}
 ALLOWED_ATS = {"greenhouse", "lever", "ashby", "workday"}
 CLASS_TOO_YOUNG = re.compile(r"class of 202[9]|graduat(?:ing|e|es)?\s*202[9]|2029[-\s]?only|class of 2030|graduat(?:ing|e|es)?\s*2030|2030[-\s]?only", re.I)
-SWE_TITLE = re.compile(r"(software|swe|full[\s-]?stack|front[\s-]?end|back[\s-]?end|data\s*eng|machine\s*learning|ml\s*eng|ai\s*eng|applied\s*(ai|ml)|devops|sre|platform\s*eng|infra|quant\s*(dev|eng|soft)|backend|frontend)", re.I)
+SWE_TITLE = re.compile(r"(software|swe|forward[\s-]?deployed|full[\s-]?stack|front[\s-]?end|back[\s-]?end|data\s*eng|machine\s*learning|ml\s*eng|ai\s*eng|applied\s*(ai|ml)|devops|sre|platform\s*eng|infra|quant\s*(dev|eng|soft)|backend|frontend)", re.I)
 
 DO_NOT_RETRY = {
     "doordash", "bedrock", "bedrock robotics", "talos", "retell", "viam", "revel", "k2",
@@ -841,6 +841,10 @@ def guess_ats(url: str) -> str:
         return "ashby"
     if "lever.co" in u:
         return "lever"
+    if "google.com/about/careers" in u:
+        return "google"
+    if "careers.qualcomm.com" in u or "eightfold.ai" in u:
+        return "eightfold"
     if "smartrecruiters" in u:
         return "smartrecruiters"
     if "icims" in u:
@@ -958,7 +962,7 @@ JR_RESOLVED_PATH = ART / "jobright-ats-resolved.json"
 JR_HW = re.compile(r"(electrical|hardware|firmware|embedded|asic|fpga|silicon|rf engineer|digital design|avionics|controls)", re.I)
 JR_TECH_WORDS = re.compile(r"(software|swe|developer|full[\s-]?stack|front[\s-]?end|back[\s-]?end|data|\bai\b|\bml\b|machine|"
                            r"cyber|security|\bit\b|computer|quant|product|analy|scien|cloud|devops|platform|embedded|"
-                           r"firmware|hardware|asic|fpga|technolog|engineering intern - (software|ai))", re.I)
+                           r"firmware|hardware|asic|fpga|technolog|engineering intern - (software|ai)|forward[\s-]?deployed)", re.I)
 JR_NONTECH = re.compile(r"(civil|structural|geotechnical|mechanical|chemical|process engineer|manufacturing|industrial|"
                         r"sales|plasma|fluids|additive|process control|building technology|power systems|^electrical intern|"
                         r"data center engineer - electrical|crop science|product & design|"
@@ -1402,14 +1406,15 @@ def recover_jobright_cards(jr_cards: list[dict], simplify: list[dict]) -> None:
         if x.get("category") not in CATS:
             continue
         prio = ats_recover.is_priority_firm(x["company_name"])
-        net = bool(prio) and (ats_recover.FIXTURE or not OFFLINE)
+        vendor = ats_recover.has_vendor_resolver(x["company_name"])
+        net = bool(prio or vendor) and (ats_recover.FIXTURE or not OFFLINE)
         r, why = ats_recover.recover(x["company_name"], x["title"], simp, network=net)
         if r:
             r = dict(r, note=r["note"] + f" [hunt-time recovery {SLOT}]")
             x["url"], x["_jr_resolved"] = r["url"], r
             new[x["_jr_key"]] = r
             RECOVERY_NOTES.append(f"RESOLVED **{x['company_name']}** — {x['title']} → {r['url']} ({r['note']})")
-        elif prio:
+        elif prio or vendor:
             RECOVERY_NOTES.append(f"unresolved priority card **{x['company_name']}** — {x['title']}: " + "; ".join(why))
     if new:
         cur = json.loads(JR_RESOLVED_PATH.read_text()) if JR_RESOLVED_PATH.exists() else {}
@@ -1608,7 +1613,8 @@ def main():
                 raw.append(rec)
                 continue
         if (degrees and not degrees_undergrad_ok(degrees)) or (
-                MS_ONLY_TITLE.search(title) and not re.search(r"\b(bs|ba|bachelor|undergrad)", title, re.I)):
+                (MS_ONLY_TITLE.search(title) or PHD_ONLY.search(title))  # 2026-10-12: "Intern, PhD, Summer 2027"
+                and not re.search(r"\b(bs|ba|bachelor|undergrad)", title, re.I)):
             rec["skip_reason"] = "MS/PhD or PhD-targeted (Sam is undergrad BS)"
             skip_breakdown[rec["skip_reason"]] += 1
             raw.append(rec)
@@ -1666,7 +1672,14 @@ def main():
             raw.append(rec)
             continue
 
-        if ck in skip_cos or norm(company) in skip_cos:
+        # 2026-10-12: skip-companies.txt is mostly "Sam already applied somewhere at this company". For priority
+        # firms and vendor-resolved companies (Google, Qualcomm) a NEW role must still surface; role-level dedupe
+        # (ledger / applied pairs / prior digests) below still blocks the exact roles he already applied to.
+        if (ck in skip_cos or norm(company) in skip_cos) and (
+                ats_recover.is_priority_firm(company) or ats_recover.has_vendor_resolver(company)):
+            rec["caveats"].append(f"{company} is on skip-companies.txt (Sam applied to other roles there); "
+                                  f"kept because this is a different role at a priority firm")
+        elif ck in skip_cos or norm(company) in skip_cos:
             rec["skip_reason"] = "skip-companies.txt"
             skip_breakdown[rec["skip_reason"]] += 1
             raw.append(rec)
@@ -1740,7 +1753,8 @@ def main():
 
         # ATS gate: only Greenhouse/Lever/Ashby/Workday are final apply-worthy
         if rec["ats"] not in ALLOWED_ATS:
-            hit = ats_recover.is_priority_firm(company)
+            hit = ats_recover.is_priority_firm(company) or (
+                company_key(company) if rec["ats"] in ("google", "eightfold") else None)
             if hit:
                 # PRIORITY firm: never bury under near-misses — surface on the approval list with a flag.
                 why = ("unresolved (Jobright-only link; Simplify/careers/board recovery found no matching req)"
