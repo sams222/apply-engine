@@ -8,8 +8,9 @@ Canonical tree: `scripts/hunt/` (this directory). Copy into a run dir, or set `H
 | --- | --- |
 | `build_jobright.py` | `raw.txt` / `hrefs.json` → `cards.json`, `jobright-discovery.json`, `jobright-ats-resolved.json` |
 | `run_hunt.py` | list-only hunt → `hunt_summary.md`, `apply_targets.json`, `sam_digest.md` |
-| `ats_recover.py` | Jobright-only ATS recovery (Simplify any-age → careers / known Greenhouse board) + `PRIORITY_FIRMS` / `KNOWN_CAREERS` (HRT board = `wehrtyou`) |
+| `ats_recover.py` | Jobright-only ATS recovery (Simplify any-age → careers / known Greenhouse board → Google careers / Eightfold) + `PRIORITY_FIRMS` / `KNOWN_CAREERS` (HRT board = `wehrtyou`) |
 | `test_priority_unresolved.py` | offline regression of the 2026-10-06 HRT miss |
+| `test_vendor_resolvers.py` | offline regression of Google careers + Qualcomm Eightfold recovery |
 | `fixtures/` | Greenhouse `wehrtyou` board snapshot + synthetic HRT-miss replay inputs |
 
 ## Why this exists
@@ -19,8 +20,8 @@ Hudson River Trading's Algorithm Development Intern card was dropped as `near_mi
 ## Behavior
 
 1. Careers URLs with `gh_jid=` count as Greenhouse; convert to the board URL when the board is known.
-2. Retry ATS recovery for Jobright-only cards: Simplify any-age → careers / known board → old board-map lookup.
-3. Priority firms with still-unresolved supported ATS stay on the approval list after location/pay/skip filters, flagged (`needs_explicit_approval` / `priority_unresolved`) with the Jobright URL — never bury only as near-miss.
+2. Retry ATS recovery for Jobright-only cards: Simplify any-age → careers / known board → Google careers / Eightfold (Qualcomm) → old board-map lookup. Vendor ATS is not engine-supported, so recovered Google/Eightfold URLs stay flagged for manual apply.
+3. Priority firms with still-unresolved supported ATS stay on the approval list after location/pay/skip filters, flagged (`needs_explicit_approval` / `priority_unresolved`) with the Jobright URL — never bury only as near-miss. Skip-companies is job-level for priority/vendor firms (a new role still surfaces). Forward Deployed titles count as SWE. PhD-only titles (e.g. `Intern, PhD`) are dropped.
 4. Jobright-sourced priority roles that are only "stale" by ATS publish date are kept with a caveat/flag instead of dropped.
 5. Do not "verify" Jobright-only links with a plain page fetch (the Jobright app is JS).
 
@@ -30,6 +31,7 @@ From the repository root (offline, no network, no live job-site applies):
 
 ```bash
 python3 scripts/hunt/test_priority_unresolved.py
+python3 scripts/hunt/test_vendor_resolvers.py
 ```
 
 Optional networked replay (public Greenhouse / careers GETs only; still does not apply):

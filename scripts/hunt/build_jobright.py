@@ -381,7 +381,7 @@ def main():
                     pass
     stats = {"cards": len(cards), "jid": 0, "apply_url_sidecar": 0, "carried_1am_url": 0,
              "resolved_carried_1am": 0, "resolved_auto": 0, "resolved_existing": 0, "swe_ai_true": 0,
-             "resolved_simplify": 0, "resolved_careers": 0, "priority_unresolved": 0, "prev_dir": str(PREV)}
+             "resolved_simplify": 0, "resolved_careers": 0, "resolved_google": 0, "resolved_eightfold": 0, "priority_unresolved": 0, "prev_dir": str(PREV)}
     recovery_log = []
     disc = []
     for c in cards:
@@ -413,7 +413,7 @@ def main():
                     # a) Simplify any-age (offline) then b) careers/custom-host board (network unless --no-resolve)
                     r, why = ats_recover.recover(c["company"], c["title"], simplify, network=not a.no_resolve)
                     if r:
-                        stats["resolved_" + r["method"]] += 1
+                        stats["resolved_" + r["method"]] = stats.get("resolved_" + r["method"], 0) + 1
                 if not r and not a.no_resolve and (c["sw"] or prio or a.resolve_all):
                     r = resolve(c, bm)  # c) generic board_map / slug lookup
                     if r:

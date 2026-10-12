@@ -109,6 +109,10 @@ def ats_of(url):
         return "ashby"
     if "lever.co" in u:
         return "lever"
+    if "google.com/about/careers" in u:
+        return "google"
+    if any(h in u for h in EIGHTFOLD_HOSTS.values()) or "eightfold.ai" in u:
+        return "eightfold"
     return None
 
 
@@ -195,6 +199,96 @@ def recover_from_simplify(company, title, listings, min_ratio=0.86):
     note = (f"recovered via Simplify listing '{t}' (score {s:.2f}, simplify active={extra.get('active')}) — "
             f"Jobright card had only a jobright.ai link")
     return {"company": company, "title": title, "url": u, "note": note, "method": "simplify"}, ""
+
+
+# ---------------------------------------------------------------- a2) vendor careers APIs (Google, Eightfold)
+# 2026-10-12: Google Forward Deployed Engineering Intern and Qualcomm SWE Internship (Eightfold) were lost because
+# recovery only knew Simplify + Greenhouse boards. These resolvers return the real posting URL; the ATS is still
+# not engine-supported, so run_hunt keeps them flagged for manual apply instead of burying them as near-misses.
+EIGHTFOLD_HOSTS = {  # company_key -> Eightfold careers host (domain param = host minus "careers.")
+    "qualcomm": "careers.qualcomm.com",
+}
+GOOGLE_COMPANIES = {"google", "google deepmind", "deepmind", "youtube", "waymo-google"}
+GOOGLE_SEARCH = "https://www.google.com/about/careers/applications/jobs/results?q={q}"
+GOOGLE_JOB_RE = re.compile(r'\["(\d{15,20})","([^"]{3,200})"')
+
+
+def has_vendor_resolver(company):
+    ck = company_key(company)
+    return ck in EIGHTFOLD_HOSTS or ck in GOOGLE_COMPANIES
+
+
+def _slug(t):
+    return re.sub(r"[^a-z0-9]+", "-", norm(t)).strip("-")
+
+
+def recover_from_google(company, title, min_ratio=0.86):
+    from urllib.parse import quote
+    q = quote('"' + re.sub(r",.*$", "", title).strip() + '"')
+    code, body = fetch(GOOGLE_SEARCH.format(q=q))
+    if code != 200:
+        return None, f"google careers: search HTTP {code}"
+    cands, seen = [], set()
+    for jid, t in GOOGLE_JOB_RE.findall(body):
+        if jid in seen:
+            continue
+        seen.add(jid)
+        cands.append((t, f"https://www.google.com/about/careers/applications/jobs/results/{jid}-{_slug(t)}",
+                      {"via": "google careers search", "active": True}))
+    if not cands:
+        return None, "google careers: no candidates"
+    best, why = pick(title, _exact_first(title, cands), min_ratio)
+    if not best:
+        return None, f"google careers: {why}"
+    s, t, u, _ = best
+    return {"company": company, "title": title, "url": u, "ats": "google", "method": "google",
+            "note": f"recovered via Google careers search matched '{t}' (score {s:.2f}) — Jobright card had only a "
+                    f"jobright.ai link"}, ""
+
+
+def recover_from_eightfold(company, title, min_ratio=0.86):
+    from urllib.parse import quote
+    host = EIGHTFOLD_HOSTS[company_key(company)]
+    domain = host.split(".", 1)[1]
+    q = quote(re.sub(r"\s*[-–]\s*(summer|fall|winter|spring)?\s*20\d\d.*$", "", title, flags=re.I).strip() or title)
+    code, body = fetch(f"https://{host}/api/pcsx/search?domain={domain}&query={q}&location=&start=0")
+    if code != 200:
+        return None, f"eightfold {host}: search HTTP {code}"
+    try:
+        pos = (json.loads(body).get("data") or {}).get("positions") or []
+    except Exception:
+        return None, f"eightfold {host}: bad JSON"
+    cands = [(p.get("name", ""), f"https://{host}/careers/job/{p.get('id')}",
+              {"via": f"eightfold {host}", "active": True, "posted_ts": p.get("postedTs") or p.get("t_create"),
+               "locations": p.get("locations") or []}) for p in pos if p.get("id")]
+    if not cands:
+        return None, f"eightfold {host}: no candidates"
+    best, why = pick(title, _exact_first(title, cands), min_ratio)
+    if not best:
+        return None, f"eightfold {host}: {why}"
+    s, t, u, extra = best
+    note = f"recovered via Eightfold {host} search matched '{t}' (score {s:.2f})"
+    if extra.get("posted_ts"):
+        from datetime import datetime, timezone
+        note += f"; ATS posted {datetime.fromtimestamp(int(extra['posted_ts']), timezone.utc):%Y-%m-%d}"
+    return {"company": company, "title": title, "url": u, "ats": "eightfold", "method": "eightfold",
+            "note": note + " — Jobright card had only a jobright.ai link"}, ""
+
+
+def _exact_first(title, cands):
+    """Vendor search returns sibling reqs whose titles differ only by season/year (Google FDE 'Summer 2027' vs
+    '2027'); tnorm() strips those, so pick() calls it a tie. An exact full-title match wins outright."""
+    ex = [c for c in cands if norm(c[0]) == norm(title)]
+    return ex[:1] if len(ex) == 1 else cands
+
+
+def recover_from_vendor(company, title, min_ratio=0.86):
+    ck = company_key(company)
+    if ck in EIGHTFOLD_HOSTS:
+        return recover_from_eightfold(company, title, min_ratio)
+    if ck in GOOGLE_COMPANIES:
+        return recover_from_google(company, title, min_ratio)
+    return None, "vendor: no resolver"
 
 
 # ---------------------------------------------------------------- b) careers / custom-host Greenhouse boards
@@ -290,4 +384,9 @@ def recover(company, title, listings, network=True, min_ratio=0.86):
         if r:
             return r, reasons
         reasons.append(why)
+        if has_vendor_resolver(company):
+            r, why = recover_from_vendor(company, title, min_ratio)
+            if r:
+                return r, reasons
+            reasons.append(why)
     return None, reasons
